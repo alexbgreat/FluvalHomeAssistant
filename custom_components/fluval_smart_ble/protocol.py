@@ -36,6 +36,7 @@ from .const import (
     CHANNEL_UNCHANGED,
     CMD_CTRL,
     CMD_CYCLE,
+    CMD_DYN,
     CMD_FIND,
     CMD_MODE,
     CMD_PRO,
@@ -179,6 +180,15 @@ def frame_read() -> bytes:
 
 def frame_find() -> bytes:
     return build_frame(CMD_FIND)
+
+
+def frame_play_effect(effect: int) -> bytes:
+    """Build a CMD_DYN frame (the app's sendKey()) for a dynamic effect ID.
+
+    Its exact behavior is unconfirmed (see docs/SCHEDULING.md); the app's
+    naming suggests it plays the effect on the light right away.
+    """
+    return build_frame(CMD_DYN, bytes([effect & 0xFF]))
 
 
 def frame_sync_time(when: datetime) -> bytes:

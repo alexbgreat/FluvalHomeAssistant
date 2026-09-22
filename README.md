@@ -96,8 +96,21 @@ to the light right away and, unless you untick the option, switches the
 light into that mode. The panel is prefilled with the schedule the
 light last reported (it only reports the one for its active mode; use
 **Refresh** to re-read it), otherwise with what was last saved from Home
-Assistant. A dynamic effect
-(storm/cloud/moonlight) set up from the FluvalSmart app is left as is.
+Assistant.
+
+### Dynamic effects
+
+Each of the Auto, Pro and Sun sync tabs has a **Dynamic effect** section:
+the light can layer one of its built-in effects — Thunderstorm 1-3, All
+colors, Cloudy 1-4 or Moonlight 1-3 — over the schedule during a daily
+window, on the days of the week you pick. The window can run past
+midnight (e.g. moonlight 22:00-01:00), and it's shaded on the chart.
+Each schedule has its own effect; an effect set up in the FluvalSmart app
+is shown and can be edited here.
+
+**Preview on light** asks the light to play the selected effect right
+away. That command's behaviour hasn't been confirmed on real hardware,
+so treat it as experimental.
 
 The schedule commands were reverse engineered from the app but haven't
 been exercised against every model; if a light doesn't behave as

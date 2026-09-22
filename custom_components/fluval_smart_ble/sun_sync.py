@@ -201,8 +201,9 @@ class SunSync:
         """Compute today's/tomorrow's schedule and write it to the light."""
         try:
             schedule = self.compute()
-            # Keep any dynamic effect the light's Auto schedule already has.
-            if (current := self.coordinator.data.auto_schedule) is not None:
+            # Without an effect in the settings, keep whatever dynamic effect
+            # the light's Auto schedule already has.
+            if schedule.dynamic is None and (current := self.coordinator.data.auto_schedule) is not None:
                 schedule.dynamic = current.dynamic
             await self.coordinator.async_set_auto_schedule(schedule, activate)
         except SunSyncError as err:

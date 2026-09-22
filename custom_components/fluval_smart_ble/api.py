@@ -14,16 +14,21 @@ from homeassistant.core import HomeAssistant, callback
 from .const import DOMAIN, MODE_OPTIONS
 from .coordinator import FluvalCoordinator
 from .schedule import (
+    EFFECTS,
     AutoSchedule,
     ProSchedule,
     auto_from_dict,
     auto_to_dict,
     default_auto_schedule,
     default_pro_schedule,
+    decode_effect,
+    effect_from_dict,
+    effect_to_dict,
     pro_from_dict,
     pro_to_dict,
     sun_sync_from_dict,
     validate_auto,
+    validate_effect,
     validate_pro,
 )
 from .sun_sync import SunSyncError, async_select_mode
@@ -41,6 +46,9 @@ _ERROR_MESSAGES = {
     "sunset_order": "Sunset must start before it ends.",
     "sunrise_after_sunset": "Sunrise must end before sunset starts.",
     "duplicate_times": "Each point needs a different time of day.",
+    "effect_unknown": "Pick an effect to play.",
+    "effect_no_days": "Pick at least one day for the effect.",
+    "effect_window": "The effect's start and end times must differ.",
 }
 
 
@@ -51,6 +59,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_set_pro)
     websocket_api.async_register_command(hass, ws_set_mode)
     websocket_api.async_register_command(hass, ws_set_sun_sync)
+    websocket_api.async_register_command(hass, ws_play_effect)
 
 
 def _coordinator(hass: HomeAssistant, entry: ConfigEntry) -> FluvalCoordinator | None:
@@ -85,8 +94,7 @@ def _describe(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     auto, auto_source = _current_auto(coordinator, entry)
     pro, pro_source = _current_pro(coordinator, entry)
     auto_dict, pro_dict = auto_to_dict(auto), pro_to_dict(pro)
-    # The dynamic-effect block is carried through server-side on save; the
-    # panel only needs to know whether one exists.
+    # The raw dynamic-effect bytes are replaced by their decoded form.
     auto_dict.pop("dynamic"), pro_dict.pop("dynamic")
     info.update(
         address=coordinator.address,
@@ -95,10 +103,10 @@ def _describe(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         mode=coordinator.effective_mode,
         auto=auto_dict,
         auto_source=auto_source,
-        auto_dynamic=auto.dynamic is not None,
+        auto_effect=effect_to_dict(decode_effect(auto.dynamic)),
         pro=pro_dict,
         pro_source=pro_source,
-        pro_dynamic=pro.dynamic is not None,
+        pro_effect=effect_to_dict(decode_effect(pro.dynamic)),
         sun_sync=coordinator.sun_sync.describe(auto) if coordinator.sun_sync is not None else None,
     )
     return info
@@ -119,6 +127,20 @@ def _lookup(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg
 
 def _send_invalid(connection: websocket_api.ActiveConnection, msg: dict[str, Any], code: str) -> None:
     connection.send_error(msg["id"], code, _ERROR_MESSAGES.get(code, "Invalid schedule."))
+
+
+def _parse_effect(connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> tuple[bool, bytes | None]:
+    """Decode the message's optional "effect"; (False, None) after sending an error."""
+    if msg.get("effect") is None:
+        return True, None
+    effect = effect_from_dict(msg["effect"])
+    if effect is None:
+        _send_invalid(connection, msg, "invalid_format")
+        return False, None
+    if (error := validate_effect(effect)) is not None:
+        _send_invalid(connection, msg, error)
+        return False, None
+    return True, effect.to_bytes()
 
 
 def _send_bluetooth_error(
@@ -143,7 +165,13 @@ async def ws_lights(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         for entry in entries:
             if (coordinator := _coordinator(hass, entry)) is not None:
                 await coordinator.async_refresh()
-    connection.send_result(msg["id"], {"lights": [_describe(hass, entry) for entry in entries]})
+    connection.send_result(
+        msg["id"],
+        {
+            "lights": [_describe(hass, entry) for entry in entries],
+            "effects": [{"id": effect_id, "name": name} for effect_id, name in EFFECTS.items()],
+        },
+    )
 
 
 @websocket_api.websocket_command(
@@ -151,6 +179,7 @@ async def ws_lights(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         vol.Required("type"): f"{DOMAIN}/set_auto",
         vol.Required("entry_id"): str,
         vol.Required("schedule"): dict,
+        vol.Optional("effect"): vol.Any(dict, None),
         vol.Optional("activate", default=True): bool,
     }
 )
@@ -168,7 +197,11 @@ async def ws_set_auto(hass: HomeAssistant, connection: websocket_api.ActiveConne
     if (error := validate_auto(schedule)) is not None:
         _send_invalid(connection, msg, error)
         return
-    schedule.dynamic = _current_auto(coordinator, entry)[0].dynamic
+    ok, dynamic = _parse_effect(connection, msg)
+    if not ok:
+        return
+    # Without an edited effect, keep the one the schedule already has.
+    schedule.dynamic = dynamic if dynamic is not None else _current_auto(coordinator, entry)[0].dynamic
     try:
         await coordinator.async_set_auto_schedule(schedule, msg["activate"])
     except (BleakError, TimeoutError) as err:
@@ -188,6 +221,7 @@ async def ws_set_auto(hass: HomeAssistant, connection: websocket_api.ActiveConne
         vol.Required("type"): f"{DOMAIN}/set_pro",
         vol.Required("entry_id"): str,
         vol.Required("schedule"): dict,
+        vol.Optional("effect"): vol.Any(dict, None),
         vol.Optional("activate", default=True): bool,
     }
 )
@@ -205,7 +239,11 @@ async def ws_set_pro(hass: HomeAssistant, connection: websocket_api.ActiveConnec
     if (error := validate_pro(schedule)) is not None:
         _send_invalid(connection, msg, error)
         return
-    schedule.dynamic = _current_pro(coordinator, entry)[0].dynamic
+    ok, dynamic = _parse_effect(connection, msg)
+    if not ok:
+        return
+    # Without an edited effect, keep the one the schedule already has.
+    schedule.dynamic = dynamic if dynamic is not None else _current_pro(coordinator, entry)[0].dynamic
     schedule.points = schedule.sorted_points()
     try:
         await coordinator.async_set_pro_schedule(schedule, msg["activate"])
@@ -265,6 +303,9 @@ async def ws_set_sun_sync(
     if config is None or coordinator.sun_sync is None:
         _send_invalid(connection, msg, "invalid_format")
         return
+    if config.effect is not None and (error := validate_effect(config.effect)) is not None:
+        _send_invalid(connection, msg, error)
+        return
     try:
         await coordinator.sun_sync.async_enable(config)
     except SunSyncError as err:
@@ -280,3 +321,27 @@ async def ws_set_sun_sync(
         )
         return
     connection.send_result(msg["id"], _describe(hass, entry))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/play_effect",
+        vol.Required("entry_id"): str,
+        vol.Required("effect"): vol.In(list(EFFECTS)),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_play_effect(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Ask the light to play a dynamic effect now, to preview it (experimental)."""
+    if (found := _lookup(hass, connection, msg)) is None:
+        return
+    _entry, coordinator = found
+    try:
+        await coordinator.async_play_effect(msg["effect"])
+    except (BleakError, TimeoutError) as err:
+        _send_bluetooth_error(connection, msg, coordinator, err)
+        return
+    connection.send_result(msg["id"], {})

@@ -62,6 +62,8 @@ function sunSchedule(cfg, sunrise, sunset) {
   };
 }
 
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
 const formatDateTime = (iso) =>
   iso ? new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "never";
 
@@ -98,7 +100,7 @@ function proCurves(points, channelCount) {
   return curves;
 }
 
-function chartSvg(curves, channels, markers = []) {
+function chartSvg(curves, channels, markers = [], bands = []) {
   const W = 720;
   const H = 180;
   const PAD_L = 34;
@@ -116,6 +118,17 @@ function chartSvg(curves, channels, markers = []) {
     grid += `<line class="grid" x1="${x(0)}" x2="${x(DAY_MINUTES)}" y1="${y(v)}" y2="${y(v)}"/>`;
     grid += `<text class="axis" x="${PAD_L - 6}" y="${y(v) + 4}" text-anchor="end">${v}%</text>`;
   }
+  // Shaded windows (the dynamic effect), split in two if they cross midnight.
+  const bandRects = bands
+    .flatMap((b) => {
+      const parts = b.start < b.end ? [[b.start, b.end]] : [[b.start, DAY_MINUTES], [0, b.end]];
+      return parts.map(
+        ([from, to], i) =>
+          `<rect class="band" x="${x(from)}" y="${y(100)}" width="${Math.max(0, x(to) - x(from))}" height="${y(0) - y(100)}"/>` +
+          (i === 0 ? `<text class="axis band-label" x="${x(from) + 4}" y="${y(100) + 24}">${escapeHtml(b.label)}</text>` : "")
+      );
+    })
+    .join("");
   const marks = markers
     .map(
       (m) =>
@@ -138,7 +151,7 @@ function chartSvg(curves, channels, markers = []) {
         `<span class="legend-item"><span class="swatch" style="background:${channelColor(name, c)}"></span>${escapeHtml(name)}</span>`
     )
     .join("");
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Brightness over the day">${grid}${marks}${lines}</svg><div class="legend">${legend}</div>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Brightness over the day">${grid}${bandRects}${marks}${lines}</svg><div class="legend">${legend}</div>`;
 }
 
 const STYLE = `
@@ -215,6 +228,16 @@ const STYLE = `
   .chart .grid { stroke: var(--divider-color); stroke-width: 1; }
   .chart .marker { stroke: var(--error-color, #db4437); stroke-width: 1.5; stroke-dasharray: 4 3; }
   .chart .marker.sun { stroke: var(--warning-color, #f9a825); }
+  .chart .band { fill: var(--primary-color); opacity: 0.1; }
+  .chart .band-label { fill: var(--primary-color); }
+  .days { display: flex; flex-wrap: wrap; gap: 6px; }
+  .days label {
+    display: inline-flex; align-items: center; gap: 4px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--divider-color); border-radius: 16px; padding: 4px 10px 4px 6px;
+  }
+  .days input { accent-color: var(--primary-color); margin: 0; }
+  .effect-fields { margin-top: 12px; display: grid; gap: 12px; }
+  .effect-fields.off { opacity: 0.55; }
   .chart .axis { fill: var(--secondary-text-color); font-size: 11px; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 13px; }
   .legend-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -292,6 +315,7 @@ class FluvalSchedulePanel extends HTMLElement {
     try {
       const result = await this._hass.callWS({ type: `${DOMAIN}/lights`, refresh });
       this._lights = result.lights;
+      this._effects = result.effects || [];
       this._loadError = null;
       if (!this._lights.some((l) => l.entry_id === this._selected)) {
         this._selected = this._lights.length ? this._lights[0].entry_id : null;
@@ -316,11 +340,17 @@ class FluvalSchedulePanel extends HTMLElement {
         auto: clone(light.auto),
         pro: clone(light.pro),
         sun: light.sun_sync ? clone(light.sun_sync.config) : null,
+        autoEffect: clone(light.auto_effect),
+        proEffect: clone(light.pro_effect),
         activateAuto: true,
         activatePro: true,
       };
     }
-    return this._drafts[light.entry_id];
+    const draft = this._drafts[light.entry_id];
+    // Sun sync settings saved before effects were editable have none; start
+    // from the effect the Auto schedule has.
+    if (draft.sun && !draft.sun.effect) draft.sun.effect = clone(light.auto_effect);
+    return draft;
   }
 
   _replaceLight(updated) {
@@ -346,7 +376,7 @@ class FluvalSchedulePanel extends HTMLElement {
   _saveAuto() {
     const draft = this._draft();
     this._call(
-      { type: `${DOMAIN}/set_auto`, entry_id: this._selected, schedule: draft.auto, activate: draft.activateAuto },
+      { type: `${DOMAIN}/set_auto`, entry_id: this._selected, schedule: draft.auto, effect: draft.autoEffect, activate: draft.activateAuto },
       draft.activateAuto ? "Auto schedule saved to the light and Auto mode switched on." : "Auto schedule saved to the light."
     );
   }
@@ -354,7 +384,7 @@ class FluvalSchedulePanel extends HTMLElement {
   _savePro() {
     const draft = this._draft();
     this._call(
-      { type: `${DOMAIN}/set_pro`, entry_id: this._selected, schedule: { points: draft.pro.points }, activate: draft.activatePro },
+      { type: `${DOMAIN}/set_pro`, entry_id: this._selected, schedule: { points: draft.pro.points }, effect: draft.proEffect, activate: draft.activatePro },
       draft.activatePro ? "Pro schedule saved to the light and Pro mode switched on." : "Pro schedule saved to the light."
     );
   }
@@ -364,6 +394,23 @@ class FluvalSchedulePanel extends HTMLElement {
       { type: `${DOMAIN}/set_sun_sync`, entry_id: this._selected, config: this._draft().sun },
       "Sun sync is on. Today's schedule has been pushed to the light, and it will be updated every night."
     );
+  }
+
+  async _previewEffect(path) {
+    let effect = this._draft();
+    for (const key of path.split(".")) effect = effect[key];
+    const name = (this._effects.find((e) => e.id === effect.effect) || {}).name || `effect ${effect.effect}`;
+    this._busy = true;
+    this._message = null;
+    this._renderContent();
+    try {
+      await this._hass.callWS({ type: `${DOMAIN}/play_effect`, entry_id: this._selected, effect: effect.effect });
+      this._message = { type: "success", text: `Asked the light to play ${name}.` };
+    } catch (err) {
+      this._message = { type: "error", text: err.message || String(err) };
+    }
+    this._busy = false;
+    this._renderContent();
   }
 
   _setMode(mode) {
@@ -404,7 +451,8 @@ class FluvalSchedulePanel extends HTMLElement {
       const min = target.min === "" ? -Infinity : Number(target.min);
       const max = target.max === "" ? Infinity : Number(target.max);
       value = Math.max(min, Math.min(max, Math.round(Number(target.value) || 0)));
-    } else value = target.value;
+    } else if (target.dataset.type === "int") value = Number(target.value);
+    else value = target.value;
     let obj = this._draft();
     for (const key of path.slice(0, -1)) obj = obj[key];
     obj[path[path.length - 1]] = value;
@@ -448,6 +496,11 @@ class FluvalSchedulePanel extends HTMLElement {
           for (const key of path) obj = obj[key];
           ev.target.value = obj;
         }
+        // Dim the effect's fields while it's switched off.
+        if (ev.target.hasAttribute("data-rerender")) {
+          const fields = ev.target.closest("label").nextElementSibling;
+          if (fields) fields.classList.toggle("off", !ev.target.checked);
+        }
         this._renderChart();
       }
     });
@@ -467,6 +520,7 @@ class FluvalSchedulePanel extends HTMLElement {
     else if (action === "save-pro") this._savePro();
     else if (action === "save-sun") this._saveSunSync();
     else if (action === "sun-off") this._setMode("auto");
+    else if (action === "preview-effect") this._previewEffect(el.dataset.path);
     else if (action === "reset") {
       delete this._drafts[this._selected];
       this._message = null;
@@ -548,6 +602,34 @@ class FluvalSchedulePanel extends HTMLElement {
       .join("")}</div>`;
   }
 
+  _renderEffect(path, effect, scheduleName) {
+    const known = this._effects.some((e) => e.id === effect.effect);
+    const options = [
+      ...(known ? [] : [`<option value="${effect.effect}" selected>Unknown effect (${effect.effect})</option>`]),
+      ...this._effects.map(
+        (e) => `<option value="${e.id}" ${e.id === effect.effect ? "selected" : ""}>${escapeHtml(e.name)}</option>`
+      ),
+    ].join("");
+    const days = DAY_LABELS.map(
+      (label, i) =>
+        `<label><input type="checkbox" data-path="${path}.days.${i}" ${effect.days[i] ? "checked" : ""}>${label}</label>`
+    ).join("");
+    return `
+      <h3>Dynamic effect</h3>
+      <label class="check"><input type="checkbox" data-path="${path}.enabled" data-rerender ${effect.enabled ? "checked" : ""}>Play a dynamic effect during the ${scheduleName}</label>
+      <div class="effect-fields ${effect.enabled ? "" : "off"}">
+        <div class="row">
+          <label class="field">Effect<select data-path="${path}.effect" data-type="int">${options}</select></label>
+          <label class="field">From<input type="time" value="${effect.start}" data-path="${path}.start" required></label>
+          <label class="field">Until<input type="time" value="${effect.end}" data-path="${path}.end" required></label>
+          <button class="secondary" data-action="preview-effect" data-path="${path}" ${this._busy || !known ? "disabled" : ""}
+            title="Experimental: asks the light to play this effect now">Preview on light</button>
+        </div>
+        <div class="days" role="group" aria-label="Days">${days}</div>
+      </div>
+      <p class="note">The light plays the effect over its schedule between these times on the chosen days; a window can run past midnight. Preview is experimental: the effect command's behaviour hasn't been confirmed on real hardware.</p>`;
+  }
+
   _renderAuto(light) {
     const draft = this._draft();
     const a = draft.auto;
@@ -571,7 +653,7 @@ class FluvalSchedulePanel extends HTMLElement {
         <label class="check"><input type="checkbox" data-path="auto.turnoff_enabled" ${a.turnoff_enabled ? "checked" : ""}>Turn the light off at</label>
         <input type="time" value="${a.turnoff}" data-path="auto.turnoff" aria-label="Turn-off time">
       </div>
-      ${light.auto_dynamic ? `<p class="note">A dynamic effect set up in the FluvalSmart app is attached to this schedule and will be kept.</p>` : ""}
+      ${this._renderEffect("autoEffect", draft.autoEffect, "Auto schedule")}
       <div class="actions">
         <label class="check"><input type="checkbox" data-path="activateAuto" ${draft.activateAuto ? "checked" : ""}>Switch to Auto mode after saving</label>
         <span class="spacer"></span>
@@ -613,7 +695,7 @@ class FluvalSchedulePanel extends HTMLElement {
         <button class="secondary" data-action="add-point" ${points.length >= PRO_MAX_POINTS ? "disabled" : ""}>Add point</button>
         <button class="secondary" data-action="sort-points">Sort by time</button>
       </div>
-      ${light.pro_dynamic ? `<p class="note">A dynamic effect set up in the FluvalSmart app is attached to this schedule and will be kept.</p>` : ""}
+      ${this._renderEffect("proEffect", draft.proEffect, "Pro schedule")}
       <div class="actions">
         <label class="check"><input type="checkbox" data-path="activatePro" ${draft.activatePro ? "checked" : ""}>Switch to Pro mode after saving</label>
         <span class="spacer"></span>
@@ -663,6 +745,7 @@ class FluvalSchedulePanel extends HTMLElement {
         <label class="check"><input type="checkbox" data-path="sun.turnoff_enabled" ${s.turnoff_enabled ? "checked" : ""}>Turn the light off at</label>
         <input type="time" value="${s.turnoff}" data-path="sun.turnoff" aria-label="Turn-off time">
       </div>
+      ${this._renderEffect("sun.effect", s.effect, "sun-synced schedule")}
       <h3>Nightly update</h3>
       <div class="row">
         <label class="field">Push the new day's schedule to the light at<input type="time" value="${s.push_time}" data-path="sun.push_time" required></label>
@@ -684,6 +767,12 @@ class FluvalSchedulePanel extends HTMLElement {
     const channels = light.channels;
     let curves;
     let markers = [];
+    const effect = { auto: draft.autoEffect, pro: draft.proEffect, sun: draft.sun && draft.sun.effect }[this._tab];
+    const bands = [];
+    if (effect && effect.enabled && effect.start && effect.end && effect.start !== effect.end) {
+      const name = (this._effects.find((e) => e.id === effect.effect) || {}).name || "Effect";
+      bands.push({ start: toMinutes(effect.start), end: toMinutes(effect.end), label: name });
+    }
     if (this._tab === "auto") {
       const a = draft.auto;
       curves = autoCurves(a, channels.length);
@@ -707,7 +796,7 @@ class FluvalSchedulePanel extends HTMLElement {
     }
     // A cleared or half-typed time can't be plotted; keep the last chart.
     if (curves.flat(2).some(Number.isNaN) || markers.some((m) => Number.isNaN(m.at))) return;
-    container.innerHTML = chartSvg(curves, channels, markers);
+    container.innerHTML = chartSvg(curves, channels, markers, bands);
   }
 }
 

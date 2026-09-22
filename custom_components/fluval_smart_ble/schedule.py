@@ -16,10 +16,115 @@ PRO_MIN_POINTS = 4
 PRO_MAX_POINTS = 10
 
 # The "dynamic effect" trailer (week bitmask, 4-byte window, effect ID) that
-# may follow an Auto/Pro schedule. It isn't editable here, but one read back
-# from the light is carried through unchanged so saving a schedule doesn't
-# silently drop an effect configured from the FluvalSmart app.
+# may follow an Auto/Pro schedule: a storm/cloud/moonlight simulation the
+# light plays over its schedule during a daily window. Kept as raw bytes on
+# the schedules (see DynamicEffect for the decoded form), so one with an
+# unrecognized effect ID is still carried through unchanged.
 DYNAMIC_BLOCK_LEN = 6
+
+# Effect IDs, from the FluvalSmart app's DeviceUtil.getDynamicRes().
+EFFECTS: dict[int, str] = {
+    1: "Thunderstorm 1",
+    2: "Thunderstorm 2",
+    3: "Thunderstorm 3",
+    4: "All colors",
+    5: "Cloudy 1",
+    6: "Cloudy 2",
+    7: "Cloudy 3",
+    8: "Cloudy 4",
+    9: "Moonlight 1",
+    10: "Moonlight 2",
+    11: "Moonlight 3",
+}
+# Days in the week bitmask's bit order (bit 0 = Sunday); bit 7 is the
+# effect's master on/off switch.
+WEEKDAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+_EFFECT_ENABLED_BIT = 0x80
+
+
+@dataclass
+class DynamicEffect:
+    """A dynamic effect played on chosen days during a daily window."""
+
+    enabled: bool
+    effect: int
+    days: list[bool]
+    start: TimeOfDay
+    end: TimeOfDay
+
+    def to_bytes(self) -> bytes:
+        week = sum(1 << i for i, on in enumerate(self.days) if on)
+        if self.enabled:
+            week |= _EFFECT_ENABLED_BIT
+        return bytes(
+            [week, self.start.hour, self.start.minute, self.end.hour, self.end.minute, self.effect & 0xFF]
+        )
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> DynamicEffect | None:
+        if len(raw) != DYNAMIC_BLOCK_LEN:
+            return None
+        week, sh, sm, eh, em, effect = raw
+        if sh > 23 or sm > 59 or eh > 23 or em > 59:
+            return None
+        return cls(
+            enabled=bool(week & _EFFECT_ENABLED_BIT),
+            effect=effect,
+            days=[bool(week & (1 << i)) for i in range(7)],
+            start=TimeOfDay(sh, sm),
+            end=TimeOfDay(eh, em),
+        )
+
+
+def default_effect() -> DynamicEffect:
+    """Off, but pre-set to a gentle evening moonlight if switched on."""
+    return DynamicEffect(
+        enabled=False, effect=9, days=[True] * 7, start=TimeOfDay(21, 0), end=TimeOfDay(23, 0)
+    )
+
+
+def validate_effect(effect: DynamicEffect) -> str | None:
+    """Return an error code if an enabled effect can't be played."""
+    if not effect.enabled:
+        return None
+    if effect.effect not in EFFECTS:
+        return "effect_unknown"
+    if not any(effect.days):
+        return "effect_no_days"
+    if effect.start == effect.end:
+        return "effect_window"
+    return None
+
+
+def effect_to_dict(effect: DynamicEffect) -> dict[str, Any]:
+    return {
+        "enabled": effect.enabled,
+        "effect": effect.effect,
+        "days": list(effect.days),
+        "start": format_time(effect.start),
+        "end": format_time(effect.end),
+    }
+
+
+def effect_from_dict(data: Any) -> DynamicEffect | None:
+    try:
+        effect = DynamicEffect(
+            enabled=bool(data["enabled"]),
+            effect=int(data["effect"]),
+            days=[bool(d) for d in data["days"]],
+            start=parse_time(data["start"]),
+            end=parse_time(data["end"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if len(effect.days) != 7 or not 0 <= effect.effect <= 255:
+        return None
+    return effect
+
+
+def decode_effect(dynamic: bytes | None) -> DynamicEffect:
+    """The schedule's effect as stored on the light, or the (disabled) default."""
+    return (DynamicEffect.from_bytes(dynamic) if dynamic is not None else None) or default_effect()
 
 
 @dataclass
@@ -142,6 +247,9 @@ class SunSyncConfig:
     turnoff: TimeOfDay = TimeOfDay(0, 0)
     # When the next day's schedule is pushed to the light each night.
     push_time: TimeOfDay = TimeOfDay(3, 0)
+    # None (settings saved before effects were editable) keeps whatever
+    # effect the light's Auto schedule already has.
+    effect: DynamicEffect | None = None
 
 
 def default_sun_sync_config(auto: AutoSchedule) -> SunSyncConfig:
@@ -151,6 +259,7 @@ def default_sun_sync_config(auto: AutoSchedule) -> SunSyncConfig:
         night=list(auto.night),
         turnoff_enabled=auto.turnoff_enabled,
         turnoff=auto.turnoff,
+        effect=decode_effect(auto.dynamic),
     )
 
 
@@ -188,6 +297,7 @@ def build_sun_schedule(
         night=list(config.night),
         turnoff_enabled=config.turnoff_enabled,
         turnoff=config.turnoff,
+        dynamic=config.effect.to_bytes() if config.effect is not None else None,
     )
     if any(not 0 <= m < DAY_MINUTES for m in raw):
         return schedule, "outside_day"
@@ -280,6 +390,7 @@ def sun_sync_to_dict(config: SunSyncConfig) -> dict[str, Any]:
         "turnoff_enabled": config.turnoff_enabled,
         "turnoff": format_time(config.turnoff),
         "push_time": format_time(config.push_time),
+        "effect": effect_to_dict(config.effect) if config.effect is not None else None,
     }
 
 
@@ -304,6 +415,10 @@ def sun_sync_from_dict(data: Any, channel_count: int) -> SunSyncConfig | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
+    if data.get("effect") is not None:
+        if (effect := effect_from_dict(data["effect"])) is None:
+            return None
+        config.effect = effect
     if len(config.day) != channel_count or len(config.night) != channel_count:
         return None
     return config

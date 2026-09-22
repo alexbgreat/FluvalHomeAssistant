@@ -175,7 +175,7 @@ light) or `←` (light to app/HA, i.e. a notification).
 | `0x07` | `CMD_CYCLE` | → | Auto-mode schedule, see SCHEDULING.md | Implemented (sidebar schedule editor) |
 | `0x08` | `CMD_CHN_INC` | → | 2 bytes: channel bitmask, amount | Reference only, see SCHEDULING.md |
 | `0x09` | `CMD_CHN_DEC` | → | 2 bytes: channel bitmask, amount | Reference only, see SCHEDULING.md |
-| `0x0A` | `CMD_DYN` | → | 1 byte: dynamic-effect ID | Reference only, see SCHEDULING.md |
+| `0x0A` | `CMD_DYN` | → | 1 byte: dynamic-effect ID | Implemented, experimental (panel's effect preview), see SCHEDULING.md |
 | `0x0B` | `CMD_PREVIEW` | → | same layout as `CMD_CTRL` | Reference only, see SCHEDULING.md |
 | `0x0C` | `CMD_STOP_PREVIEW` | → | no args | Reference only |
 | `0x0D` | `CMD_READTIME` | → / ← | no args (request); response layout not captured | Reference only (request builder exists conceptually; not wired up) |

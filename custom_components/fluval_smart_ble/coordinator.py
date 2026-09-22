@@ -31,6 +31,7 @@ from .protocol import (
     ParsedState,
     encode_message,
     frame_find,
+    frame_play_effect,
     frame_read,
     frame_set_auto,
     frame_set_channels,
@@ -333,3 +334,8 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             await self._async_write(frame_set_mode(MODE_PRO))
             self.data.mode = MODE_PRO
         self.async_set_updated_data(self.data)
+
+    async def async_play_effect(self, effect: int) -> None:
+        """Ask the light to play a dynamic effect now (experimental, CMD_DYN)."""
+        await self._async_ensure_connected()
+        await self._async_write(frame_play_effect(effect))
