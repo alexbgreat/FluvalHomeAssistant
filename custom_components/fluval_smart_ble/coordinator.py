@@ -35,6 +35,7 @@ from .protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 15
+CONNECT_SETTLE_DELAY = 0.7
 READ_RESPONSE_TIMEOUT = 5
 MAX_WRITE_CHUNK = 17
 CHUNK_DELAY = 0.008
@@ -100,11 +101,18 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         try:
             frame = await self._async_send_and_wait(frame_read())
         except (BleakError, TimeoutError, EOFError) as err:
-            raise UpdateFailed(f"Could not read Fluval light state: {err}") from err
+            raise UpdateFailed(
+                f"Could not read Fluval light {self.address} state: "
+                f"{type(err).__name__}: {err}"
+            ) from err
 
+        _LOGGER.debug("Fluval light %s read response: %s", self.address, frame.hex())
         parsed = parse_read_response(frame, len(self.model.channels))
         if parsed is None:
-            raise UpdateFailed("Unexpected response while reading Fluval light state")
+            raise UpdateFailed(
+                f"Unexpected response while reading Fluval light {self.address} "
+                f"state (frame={frame.hex()}, expected {len(self.model.channels)} channels)"
+            )
 
         state = self.data
         state.mode = parsed.mode
@@ -155,10 +163,21 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             self._write_char = write_char
             self._client = client
 
+            # The official app waits 300ms after service discovery before
+            # enabling notifications, then a further 400ms before treating
+            # the connection as ready to receive its first command. Cheap
+            # BLE modules like this one's firmware can silently drop writes
+            # sent before its own post-connection init settles, so mirror
+            # that same ~700ms grace period here.
+            _LOGGER.debug("Fluval light %s connected, waiting for module to settle", self.address)
+            await asyncio.sleep(CONNECT_SETTLE_DELAY)
+
     def _notification_handler(self, _characteristic: BleakGATTCharacteristic, data: bytearray) -> None:
+        _LOGGER.debug("Fluval light %s notification: %s", self.address, bytes(data).hex())
         frame = self._reassembler.feed(bytes(data))
         if frame is None:
             return
+        _LOGGER.debug("Fluval light %s decoded frame: %s", self.address, frame.hex())
         for waiter in list(self._read_waiters):
             if not waiter.done():
                 waiter.set_result(frame)
@@ -180,6 +199,13 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         if client is None or not client.is_connected:
             raise BleakError("not connected")
         wire = encode_message(frame)
+        _LOGGER.debug(
+            "Fluval light %s writing frame=%s wire=%s (response=%s)",
+            self.address,
+            frame.hex(),
+            wire.hex(),
+            self._write_with_response,
+        )
         for offset in range(0, len(wire), MAX_WRITE_CHUNK):
             chunk = wire[offset : offset + MAX_WRITE_CHUNK]
             await client.write_gatt_char(
