@@ -40,11 +40,9 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
   polling to stay in sync with changes made from the FluvalSmart app or
   the light's own buttons.
 
-Programming the Auto/Pro on-device schedules from Home Assistant isn't
-implemented yet — use the official app for that; this integration can
-still switch the light in and out of whatever schedule is already stored
-on it. The scheduling commands are fully documented for future work in
-[docs/SCHEDULING.md](docs/SCHEDULING.md).
+- Schedule editor: program the light's on-device Auto (sunrise/sunset)
+  and Pro (4-10 point) schedules from Home Assistant — see
+  [Configuring the light schedule](#configuring-the-light-schedule).
 
 ## Installation
 
@@ -65,6 +63,34 @@ adapter (or an ESPHome/Shelly Bluetooth proxy) in range of the light.
 Once the light is discovered, a notification invites you to add it under
 **Settings → Devices & Services**. You can also add it manually from
 **Settings → Devices & Services → Add Integration → Fluval Smart**.
+
+## Configuring the light schedule
+
+The light runs its Auto and Pro schedules by itself, against its own
+clock, so they keep working even when Home Assistant is offline. To edit
+them, go to **Settings → Devices & Services → Fluval Smart**, click
+**Configure** on the light, and pick a schedule:
+
+- **Auto schedule (sunrise / sunset)**: the sunrise window (the light
+  fades from night to day brightness), the sunset window (it fades back),
+  day and night brightness for each LED channel, and an optional fixed
+  daily turn-off time.
+- **Pro schedule**: first choose how many points (4-10) the day has, then
+  set a time of day and a brightness for each LED channel at every point.
+  The light interpolates between consecutive points.
+
+Brightness is a whole percentage per channel. Saving sends the schedule
+to the light right away and, unless you untick the option, switches the
+light into that mode. The editor is prefilled with the schedule the
+light last reported (it only reports the one for its active mode),
+otherwise with what was last saved from Home Assistant. A dynamic effect
+(storm/cloud/moonlight) set up from the FluvalSmart app is left as is.
+
+The schedule commands were reverse engineered from the app but haven't
+been exercised against every model; if a light doesn't behave as
+expected after saving, enable debug logging for
+`custom_components.fluval_smart_ble` and open an issue with the logged
+frames.
 
 ## Protocol documentation
 

@@ -29,19 +29,32 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time as TimeOfDay
 
 from .const import (
     BRIGHTNESS_SCALE,
     CHANNEL_UNCHANGED,
     CMD_CTRL,
+    CMD_CYCLE,
     CMD_FIND,
     CMD_MODE,
+    CMD_PRO,
     CMD_READ,
     CMD_SWITCH,
     CMD_SYNCTIME,
     FRAME_HEADER,
+    MODE_AUTO,
     MODE_MANUAL,
+    MODE_PRO,
+)
+from .schedule import (
+    DYNAMIC_BLOCK_LEN,
+    PRO_MAX_POINTS,
+    PRO_MIN_POINTS,
+    AutoSchedule,
+    ProPoint,
+    ProSchedule,
+    clamp_percent,
 )
 
 _OBFUSCATION_KEY = 0x54
@@ -212,6 +225,109 @@ def frame_set_channels(values: list[float | None]) -> bytes:
     return build_frame(CMD_CTRL, bytes(args))
 
 
+def _time_bytes(value: TimeOfDay) -> bytes:
+    return bytes([value.hour % 24, value.minute % 60])
+
+
+def _read_time(data: bytes, offset: int) -> TimeOfDay:
+    hour, minute = data[offset], data[offset + 1]
+    if hour > 23 or minute > 59:
+        raise ValueError(f"invalid time {hour}:{minute}")
+    return TimeOfDay(hour, minute)
+
+
+def frame_set_auto(schedule: AutoSchedule) -> bytes:
+    """Build a CMD_CYCLE frame programming the Auto mode schedule.
+
+    The optional blocks after the base schedule are told apart purely by
+    total length, so the turn-off block is always sent (disabled via its
+    own enable byte when unused) to keep the variant unambiguous. A
+    dynamic-effect block read back from the light is re-sent unchanged.
+    """
+    args = bytearray()
+    args += _time_bytes(schedule.sunrise_start) + _time_bytes(schedule.sunrise_end)
+    args += bytes(clamp_percent(v) for v in schedule.day)
+    args += _time_bytes(schedule.sunset_start) + _time_bytes(schedule.sunset_end)
+    args += bytes(clamp_percent(v) for v in schedule.night)
+    args += bytes([1 if schedule.turnoff_enabled else 0]) + _time_bytes(schedule.turnoff)
+    if schedule.dynamic is not None and len(schedule.dynamic) == DYNAMIC_BLOCK_LEN:
+        args += schedule.dynamic
+    return build_frame(CMD_CYCLE, bytes(args))
+
+
+def frame_set_pro(schedule: ProSchedule) -> bytes:
+    """Build a CMD_PRO frame programming the Pro mode schedule.
+
+    Points are sorted by time of day first, as the app does before
+    sending them.
+    """
+    points = schedule.sorted_points()
+    if not PRO_MIN_POINTS <= len(points) <= PRO_MAX_POINTS:
+        raise ValueError(f"a Pro schedule needs {PRO_MIN_POINTS}-{PRO_MAX_POINTS} points")
+    args = bytearray([len(points)])
+    for point in points:
+        args += _time_bytes(point.at)
+        args += bytes(clamp_percent(v) for v in point.values)
+    if schedule.dynamic is not None and len(schedule.dynamic) == DYNAMIC_BLOCK_LEN:
+        args += schedule.dynamic
+    return build_frame(CMD_PRO, bytes(args))
+
+
+def parse_auto_schedule(args: bytes, channel_count: int) -> AutoSchedule | None:
+    """Decode an Auto schedule from a CMD_READ response's bytes after the mode byte."""
+    n = channel_count
+    base = 8 + 2 * n
+    extra = len(args) - base
+    if extra not in (0, 3, DYNAMIC_BLOCK_LEN, 3 + DYNAMIC_BLOCK_LEN):
+        return None
+    try:
+        schedule = AutoSchedule(
+            sunrise_start=_read_time(args, 0),
+            sunrise_end=_read_time(args, 2),
+            day=[clamp_percent(b) for b in args[4 : 4 + n]],
+            sunset_start=_read_time(args, 4 + n),
+            sunset_end=_read_time(args, 6 + n),
+            night=[clamp_percent(b) for b in args[8 + n : 8 + 2 * n]],
+        )
+        rest = args[base:]
+        if extra in (3, 3 + DYNAMIC_BLOCK_LEN):
+            schedule.turnoff_enabled = bool(rest[0])
+            schedule.turnoff = _read_time(rest, 1)
+            rest = rest[3:]
+    except ValueError:
+        return None
+    if len(rest) == DYNAMIC_BLOCK_LEN:
+        schedule.dynamic = bytes(rest)
+    return schedule
+
+
+def parse_pro_schedule(args: bytes, channel_count: int) -> ProSchedule | None:
+    """Decode a Pro schedule from a CMD_READ response's bytes after the mode byte."""
+    if not args:
+        return None
+    count = args[0]
+    if not PRO_MIN_POINTS <= count <= PRO_MAX_POINTS:
+        return None
+    stride = channel_count + 2
+    base = 1 + count * stride
+    if len(args) not in (base, base + DYNAMIC_BLOCK_LEN):
+        return None
+    points = []
+    try:
+        for i in range(count):
+            offset = 1 + i * stride
+            points.append(
+                ProPoint(
+                    _read_time(args, offset),
+                    [clamp_percent(b) for b in args[offset + 2 : offset + stride]],
+                )
+            )
+    except ValueError:
+        return None
+    dynamic = bytes(args[base:]) if len(args) > base else None
+    return ProSchedule(points, dynamic)
+
+
 @dataclass
 class ParsedState:
     """Result of parsing a CMD_READ response."""
@@ -219,13 +335,17 @@ class ParsedState:
     mode: int
     is_on: bool | None
     channel_values: list[float] | None
+    auto_schedule: AutoSchedule | None = None
+    pro_schedule: ProSchedule | None = None
 
 
 def parse_read_response(frame: bytes, channel_count: int) -> ParsedState | None:
     """Parse a CMD_READ response frame.
 
     Only the manual-mode response carries live on/off and per-channel
-    brightness; auto/pro-mode responses only reveal the active mode.
+    brightness; auto/pro-mode responses instead carry the stored schedule
+    for that mode, which is decoded on a best-effort basis (None if its
+    length doesn't match any known layout).
     """
     if len(frame) < 4:
         return None
@@ -235,6 +355,20 @@ def parse_read_response(frame: bytes, channel_count: int) -> ParsedState | None:
         return None
 
     mode = frame[2]
+    if mode == MODE_AUTO:
+        return ParsedState(
+            mode=mode,
+            is_on=None,
+            channel_values=None,
+            auto_schedule=parse_auto_schedule(frame[3:-1], channel_count),
+        )
+    if mode == MODE_PRO:
+        return ParsedState(
+            mode=mode,
+            is_on=None,
+            channel_values=None,
+            pro_schedule=parse_pro_schedule(frame[3:-1], channel_count),
+        )
     if mode != MODE_MANUAL:
         return ParsedState(mode=mode, is_on=None, channel_values=None)
 
