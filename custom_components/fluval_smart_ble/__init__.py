@@ -13,6 +13,7 @@ from .coordinator import FluvalCoordinator
 from .models import GENERIC_MODEL, get_model
 from .panel import async_register_panel, async_remove_panel
 from .sun_sync import SunSync
+from .weather_sync import WeatherSync
 
 PLATFORMS: list[Platform] = [Platform.LIGHT, Platform.NUMBER, Platform.SELECT, Platform.BUTTON]
 
@@ -35,6 +36,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ) from err
 
     coordinator.sun_sync = SunSync(hass, entry, coordinator)
+    coordinator.weather_sync = WeatherSync(hass, entry, coordinator)
+    # Weather first: sun sync's catch-up push asks it for the effect.
+    coordinator.weather_sync.async_start()
     await coordinator.sun_sync.async_start()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
@@ -50,6 +54,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator: FluvalCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
         if coordinator.sun_sync is not None:
             coordinator.sun_sync.async_stop()
+        if coordinator.weather_sync is not None:
+            coordinator.weather_sync.async_stop()
         await coordinator.async_unload()
     return unload_ok
 

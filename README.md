@@ -29,11 +29,14 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
   channel (matching the sliders in the manual tab of the official app),
   for models whose channels don't map onto a single color.
 - `select` entity: switch the light between Manual, Auto (sunrise/sunset
-  ramp), Pro (multi-point schedule) and Sun sync modes.
+  ramp), Pro (multi-point schedule), Sun sync and Weather sync modes.
 - Sun sync mode: Home Assistant recomputes the Auto schedule every day
   from the real sunrise and sunset at your location (with configurable
   offsets) and pushes it to the light nightly — see
   [Sun sync](#sun-sync).
+- Weather sync mode: sun sync, plus the light's dynamic effect (clouds,
+  storms, moonlight) follows a Home Assistant weather entity as it
+  changes — see [Weather sync](#weather-sync).
 - `button` entities: make the light blink so it can be physically
   located, and push the current time to the light's on-board clock on
   demand.
@@ -76,7 +79,8 @@ clock, so they keep working even when Home Assistant is offline. To edit
 them, open **Aquarium Light** in the Home Assistant sidebar (it appears
 for admin users once a light is set up). If you have several lights,
 pick one from the drop-down. The panel also shows and switches the
-light's current mode (Manual / Auto / Pro / Sun sync), and has three tabs:
+light's current mode (Manual / Auto / Pro / Sun sync / Weather sync), and
+has four tabs:
 
 - **Auto schedule**: the sunrise window (the light fades from night to
   day brightness), the sunset window (it fades back), day and night
@@ -87,6 +91,7 @@ light's current mode (Manual / Auto / Pro / Sun sync), and has three tabs:
   light interpolates between consecutive points, wrapping around
   midnight.
 - **Sun sync**: see [below](#sun-sync).
+- **Weather sync**: see [below](#weather-sync).
 
 Both tabs plot the resulting brightness of every channel across the day
 as you edit.
@@ -176,3 +181,41 @@ write-up lives in [`docs/`](docs/), split by topic:
   page for why.
 
 This integration is not affiliated with or endorsed by Fluval/Hagen.
+
+### Weather sync
+
+Weather sync is sun sync with the dynamic effect chosen by the weather.
+Pick a `weather.*` entity (from any weather integration, e.g. Met.no),
+then choose an effect — or none — for each kind of weather:
+
+| Weather | Home Assistant conditions | Default effect |
+|---|---|---|
+| Clear | `sunny`, `clear-night` | none |
+| Partly cloudy | `partlycloudy` | Cloudy 1 |
+| Cloudy | `cloudy` | Cloudy 2 |
+| Fog | `fog` | Cloudy 4 |
+| Rain | `rainy` | Cloudy 3 |
+| Heavy rain | `pouring` | Thunderstorm 1 |
+| Thunderstorm | `lightning`, `lightning-rainy` | Thunderstorm 3 |
+| Hail | `hail` | Thunderstorm 2 |
+| Snow | `snowy`, `snowy-rainy` | none |
+| Windy | `windy`, `windy-variant` | none |
+| Exceptional | `exceptional` | none |
+
+and a **Moonlight** effect (default Moonlight 1, or none) for the night.
+
+The light's schedule holds a single effect, so Home Assistant rewrites it
+as things change: whenever the weather entity's condition changes, and at
+the day/night switch-overs. By day — from the start of the sunrise fade to
+the end of the sunset fade — the weather's effect plays. At night the
+moonlight effect plays; with **Keep weather effects at night** on (the
+default), a night whose weather has an effect of its own keeps it instead,
+so moonlight shows on clear nights and storms keep flashing after dark.
+Turn it off to always get moonlight at night.
+
+The fades, brightness and nightly update still come from the Sun sync tab.
+Only the condition matters: attribute updates (temperature, wind, ...)
+don't touch the light, and a weather entity that goes briefly unavailable
+keeps the last known weather. If the light can't be reached, Home
+Assistant retries every 10 minutes. Choosing any other mode turns weather
+sync off (**Turn off weather sync** goes back to plain sun sync).

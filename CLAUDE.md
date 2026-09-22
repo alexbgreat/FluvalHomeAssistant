@@ -18,6 +18,17 @@
   `api.py`; registered by `panel.py`.
 - Sun sync (`sun_sync.py`) is a Home Assistant-side mode that rewrites the
   light's Auto schedule nightly from the real sunrise/sunset.
+- Weather sync (`weather_sync.py`) rides on sun sync: it swaps only the Auto
+  schedule's single dynamic effect when the weather entity's condition
+  changes and at the day/night boundaries (sunrise-fade start, sunset-fade
+  end). It must not re-run sun sync's compute for that: after noon sun sync
+  targets tomorrow's sun times, which shifts the boundaries.
 - Support both older (2024.x) and current Home Assistant cores; there's no
   test suite in the repo yet, so validate against real HA cores
   (`pytest-homeassistant-custom-component`) in a scratch venv.
+  Gotchas: set `asyncio_mode = auto`; pytest-freezer's `freezer` freezes the
+  loop clock so any `asyncio.sleep` hangs - use
+  `freezegun.freeze_time(..., tick=True)`, started after `hass_ws_client`
+  connects (a frozen clock invalidates its token); patch
+  `coordinator.SCHEDULE_MODE_DELAY` to 0 and mock the coordinator's
+  `_async_ensure_connected`/`_async_write` instead of setting up bluetooth.

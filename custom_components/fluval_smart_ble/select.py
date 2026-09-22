@@ -22,10 +22,11 @@ async def async_setup_entry(
 
 
 class FluvalModeSelect(FluvalEntity, SelectEntity):
-    """Switch the light between manual, auto (sunrise/sunset), pro and sun sync.
+    """Switch the light between manual, auto (sunrise/sunset), pro, sun and weather sync.
 
     Sun sync is Home Assistant's own mode: the light runs in auto, with its
-    schedule rewritten nightly to follow the real sunrise and sunset.
+    schedule rewritten nightly to follow the real sunrise and sunset. Weather
+    sync adds a dynamic effect that follows a weather entity.
     """
 
     _attr_name = "Mode"
