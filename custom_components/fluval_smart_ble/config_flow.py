@@ -25,16 +25,33 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _extract_model_id(discovery_info: BluetoothServiceInfoBleak) -> int | None:
-    """Pull the 2-byte model ID out of the advertisement's manufacturer data."""
+    """Pull the model ID out of the advertisement's manufacturer data.
+
+    Fluval's BLE module doesn't use a real, spec-compliant company ID: it
+    broadcasts a 4-character ASCII hex string of the model ID (e.g. "0141"
+    for model 321 = 0x141) spread across the two-byte "company ID" field
+    and the start of the manufacturer data payload. Confirmed against a
+    real Aquasky 600mm's advertisement, whose manufacturer_data was
+    {0x3130: bytes.fromhex("3431303130330000...")}  ->  raw bytes
+    "0","1","4","1",...  ->  0x0141 == 321 (LIGHT_ID_AQUASKY_600).
+    """
     _LOGGER.debug(
         "Fluval light %s advertised manufacturer_data=%s service_data=%s",
         discovery_info.address,
         {hex(k): v.hex() for k, v in discovery_info.manufacturer_data.items()},
         {k: v.hex() for k, v in discovery_info.service_data.items()},
     )
-    for payload in discovery_info.manufacturer_data.values():
-        if len(payload) >= 2:
-            return (payload[0] << 8) | payload[1]
+    for company_id, payload in discovery_info.manufacturer_data.items():
+        raw = bytes([company_id & 0xFF, (company_id >> 8) & 0xFF]) + payload
+        value = 0
+        digits = 0
+        for byte in raw[:4]:
+            if not 0x30 <= byte <= 0x39:  # ASCII '0'-'9'
+                break
+            value = (value << 4) | (byte - 0x30)
+            digits += 1
+        if digits == 4:
+            return value
     return None
 
 
