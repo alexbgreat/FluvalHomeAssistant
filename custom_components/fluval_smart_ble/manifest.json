@@ -1,0 +1,16 @@
+{
+  "domain": "fluval_smart_ble",
+  "name": "Fluval Smart",
+  "codeowners": ["@alexbgreat"],
+  "config_flow": true,
+  "dependencies": ["bluetooth"],
+  "documentation": "https://github.com/alexbgreat/FluvalHomeAssistant",
+  "iot_class": "local_push",
+  "requirements": ["bleak-retry-connector>=3.4.0"],
+  "bluetooth": [
+    {
+      "service_uuid": "00001000-0000-1000-8000-00805f9b34fb"
+    }
+  ],
+  "version": "0.1.0"
+}
