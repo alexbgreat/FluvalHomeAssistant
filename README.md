@@ -76,8 +76,10 @@ For anyone extending this integration or debugging with a BLE sniffer:
 - Per-channel brightness is sent/read as tenths of a percent (0–1000),
   and a channel value of `0xFFFF` means "leave this channel unchanged" in
   a set-channels command.
-- A light's model is a 2-byte big-endian ID broadcast in the BLE
-  advertisement's manufacturer data.
+- A light's model is broadcast as a 4-character ASCII hex string (e.g.
+  `"0141"` for model 321) spread across the BLE advertisement's
+  manufacturer data "company ID" field and the start of its payload -
+  the module doesn't use a real, spec-compliant company ID.
 
 See `custom_components/fluval_smart_ble/protocol.py` and `models.py` for
 the full command set and the model/channel table.
