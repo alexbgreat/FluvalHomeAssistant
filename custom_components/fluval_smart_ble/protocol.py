@@ -29,6 +29,7 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from .const import (
     BRIGHTNESS_SCALE,
@@ -38,6 +39,7 @@ from .const import (
     CMD_MODE,
     CMD_READ,
     CMD_SWITCH,
+    CMD_SYNCTIME,
     FRAME_HEADER,
     MODE_MANUAL,
 )
@@ -164,6 +166,31 @@ def frame_read() -> bytes:
 
 def frame_find() -> bytes:
     return build_frame(CMD_FIND)
+
+
+def frame_sync_time(when: datetime) -> bytes:
+    """Build a CMD_SYNCTIME frame setting the light's on-board clock.
+
+    `when` should be local time - the light schedules its Auto/Pro modes
+    against its own on-board clock, with no timezone concept of its own.
+    Field layout and byte order match the app's syncDeviceTime():
+    year-2000, month (0-based), day, weekday (0=Sunday..6=Saturday), hour,
+    minute, second.
+    """
+    return build_frame(
+        CMD_SYNCTIME,
+        bytes(
+            [
+                max(0, when.year - 2000) & 0xFF,
+                (when.month - 1) & 0xFF,
+                when.day & 0xFF,
+                (when.isoweekday() % 7) & 0xFF,
+                when.hour & 0xFF,
+                when.minute & 0xFF,
+                when.second & 0xFF,
+            ]
+        ),
+    )
 
 
 def frame_set_channels(values: list[float | None]) -> bytes:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -14,9 +15,9 @@ from .entity import FluvalEntity
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up the find-device button."""
+    """Set up the find-device and sync-time buttons."""
     coordinator: FluvalCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([FluvalFindButton(coordinator)])
+    async_add_entities([FluvalFindButton(coordinator), FluvalSyncTimeButton(coordinator)])
 
 
 class FluvalFindButton(FluvalEntity, ButtonEntity):
@@ -31,3 +32,24 @@ class FluvalFindButton(FluvalEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.async_find()
+
+
+class FluvalSyncTimeButton(FluvalEntity, ButtonEntity):
+    """Pushes Home Assistant's current local time to the light's clock.
+
+    The light's Auto/Pro schedules run against its own on-board clock,
+    which drifts and resets on power loss; this is also done
+    automatically on every (re)connect, but is exposed here too so it
+    can be triggered on demand or from an automation.
+    """
+
+    _attr_name = "Sync Time"
+    _attr_icon = "mdi:clock-check-outline"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: FluvalCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.address}_sync_time"
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_sync_time()

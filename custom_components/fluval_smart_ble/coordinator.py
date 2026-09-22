@@ -9,6 +9,7 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
+import homeassistant.util.dt as dt_util
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -27,6 +28,7 @@ from .protocol import (
     frame_read,
     frame_set_channels,
     frame_set_mode,
+    frame_sync_time,
     frame_turn_off,
     frame_turn_on,
     parse_read_response,
@@ -171,6 +173,18 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             # that same ~700ms grace period here.
             _LOGGER.debug("Fluval light %s connected, waiting for module to settle", self.address)
             await asyncio.sleep(CONNECT_SETTLE_DELAY)
+
+            try:
+                await self._async_write(frame_sync_time(dt_util.now()))
+            except BleakError:
+                _LOGGER.debug(
+                    "Fluval light %s: syncing time on connect failed", self.address, exc_info=True
+                )
+
+    async def async_sync_time(self) -> None:
+        """Push the current local time to the light's on-board clock."""
+        await self._async_ensure_connected()
+        await self._async_write(frame_sync_time(dt_util.now()))
 
     def _notification_handler(self, _characteristic: BleakGATTCharacteristic, data: bytearray) -> None:
         _LOGGER.debug("Fluval light %s notification: %s", self.address, bytes(data).hex())

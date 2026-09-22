@@ -30,7 +30,12 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
   for models whose channels don't map onto a single color.
 - `select` entity: switch the light between Manual, Auto (sunrise/sunset
   ramp) and Pro (multi-point schedule) modes.
-- `button` entity: make the light blink so it can be physically located.
+- `button` entities: make the light blink so it can be physically
+  located, and push the current time to the light's on-board clock on
+  demand.
+- Automatic time sync: the light's Auto/Pro schedules run against its
+  own clock, which drifts and resets on power loss, so this integration
+  pushes Home Assistant's current local time to it on every connection.
 - A persistent BLE connection with automatic reconnect, and periodic
   polling to stay in sync with changes made from the FluvalSmart app or
   the light's own buttons.
