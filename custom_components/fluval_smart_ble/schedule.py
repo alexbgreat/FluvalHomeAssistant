@@ -422,3 +422,134 @@ def sun_sync_from_dict(data: Any, channel_count: int) -> SunSyncConfig | None:
     if len(config.day) != channel_count or len(config.night) != channel_count:
         return None
     return config
+
+
+# --- Weather sync --------------------------------------------------------------
+
+# Home Assistant's weather conditions, grouped into the weather types the
+# panel offers an effect for (the group id is the condition shown for it).
+WEATHER_GROUPS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "sunny": ("Clear", ("sunny", "clear-night")),
+    "partlycloudy": ("Partly cloudy", ("partlycloudy",)),
+    "cloudy": ("Cloudy", ("cloudy",)),
+    "fog": ("Fog", ("fog",)),
+    "rainy": ("Rain", ("rainy",)),
+    "pouring": ("Heavy rain", ("pouring",)),
+    "lightning": ("Thunderstorm", ("lightning", "lightning-rainy")),
+    "hail": ("Hail", ("hail",)),
+    "snowy": ("Snow", ("snowy", "snowy-rainy")),
+    "windy": ("Windy", ("windy", "windy-variant")),
+    "exceptional": ("Exceptional", ("exceptional",)),
+}
+_CONDITION_GROUP = {cond: group for group, (_, conds) in WEATHER_GROUPS.items() for cond in conds}
+
+DEFAULT_WEATHER_EFFECTS: dict[str, int | None] = {
+    "sunny": None,
+    "partlycloudy": 5,
+    "cloudy": 6,
+    "fog": 8,
+    "rainy": 7,
+    "pouring": 1,
+    "lightning": 3,
+    "hail": 2,
+    "snowy": None,
+    "windy": None,
+    "exceptional": None,
+}
+DEFAULT_MOONLIGHT = 9
+
+
+@dataclass
+class WeatherSyncConfig:
+    """Weather sync: the sun-synced schedule's effect follows the weather.
+
+    Between the start of the sunrise fade and the end of the sunset fade the
+    light plays the effect mapped to the current weather (None = no effect).
+    At night it plays the moonlight effect, unless `weather_at_night` is set
+    and the weather has an effect of its own (moonlight shows on clear
+    nights; a storm still flashes after dark).
+    """
+
+    entity_id: str
+    effects: dict[str, int | None] = field(default_factory=lambda: dict(DEFAULT_WEATHER_EFFECTS))
+    moonlight: int | None = DEFAULT_MOONLIGHT
+    weather_at_night: bool = True
+
+
+def weather_group(condition: str | None) -> str | None:
+    """The weather group a Home Assistant condition belongs to, if known."""
+    return _CONDITION_GROUP.get(condition) if condition else None
+
+
+def weather_effect_id(
+    config: WeatherSyncConfig, condition: str | None, night: bool
+) -> int | None:
+    """The effect to play for `condition` by day or night (None = no effect)."""
+    group = weather_group(condition)
+    weather = config.effects.get(group) if group is not None else None
+    if not night:
+        return weather
+    if config.weather_at_night and weather is not None:
+        return weather
+    return config.moonlight
+
+
+def build_weather_effect(
+    effect_id: int | None, schedule: AutoSchedule, night: bool
+) -> DynamicEffect:
+    """The dynamic effect block covering the current day or night period.
+
+    The day period runs from the start of the sunrise fade to the end of the
+    sunset fade; the night period is the rest (crossing midnight). With no
+    effect the block is sent switched off, so nothing plays.
+    """
+    day_start, day_end = schedule.sunrise_start, schedule.sunset_end
+    start, end = (day_end, day_start) if night else (day_start, day_end)
+    return DynamicEffect(
+        enabled=effect_id is not None,
+        effect=effect_id if effect_id is not None else DEFAULT_MOONLIGHT,
+        days=[True] * 7,
+        start=start,
+        end=end,
+    )
+
+
+def is_night(schedule: AutoSchedule, now: TimeOfDay) -> bool:
+    """Whether `now` falls outside the schedule's sunrise-start..sunset-end day."""
+    return not _minutes(schedule.sunrise_start) <= _minutes(now) < _minutes(schedule.sunset_end)
+
+
+def weather_sync_to_dict(config: WeatherSyncConfig) -> dict[str, Any]:
+    return {
+        "entity_id": config.entity_id,
+        "effects": {group: config.effects.get(group) for group in WEATHER_GROUPS},
+        "moonlight": config.moonlight,
+        "weather_at_night": config.weather_at_night,
+    }
+
+
+def weather_sync_from_dict(data: Any) -> WeatherSyncConfig | None:
+    def effect(value: Any) -> int | None:
+        if value is None:
+            return None
+        value = int(value)
+        if value not in EFFECTS:
+            raise ValueError(value)
+        return value
+
+    try:
+        entity_id = data["entity_id"]
+        if not isinstance(entity_id, str) or not entity_id.startswith("weather."):
+            return None
+        effects = dict(DEFAULT_WEATHER_EFFECTS)
+        for group, value in (data.get("effects") or {}).items():
+            if group in WEATHER_GROUPS:
+                effects[group] = effect(value)
+        return WeatherSyncConfig(
+            entity_id=entity_id,
+            effects=effects,
+            moonlight=effect(data.get("moonlight", DEFAULT_MOONLIGHT)),
+            weather_at_night=bool(data.get("weather_at_night", True)),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None

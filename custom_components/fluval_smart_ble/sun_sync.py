@@ -20,7 +20,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later, async_track_time_change
 from homeassistant.helpers.sun import get_astral_event_date
 
-from .const import MODE_SUN_SYNC, MODES_REVERSE
+from .const import MODE_SUN_SYNC, MODE_WEATHER_SYNC, MODES_REVERSE
 from .coordinator import FluvalCoordinator
 from .schedule import (
     AutoSchedule,
@@ -147,6 +147,9 @@ class SunSync:
 
     @callback
     def async_disable(self) -> None:
+        # Weather sync rides on sun sync, so it goes too.
+        if (weather := self.coordinator.weather_sync) is not None:
+            weather.async_disable()
         if not self.enabled:
             return
         self.enabled = False
@@ -201,9 +204,13 @@ class SunSync:
         """Compute today's/tomorrow's schedule and write it to the light."""
         try:
             schedule = self.compute()
+            weather = self.coordinator.weather_sync
+            if weather is not None and weather.active:
+                # Weather sync picks the effect instead of the settings.
+                schedule.dynamic = weather.dynamic_for(schedule)
             # Without an effect in the settings, keep whatever dynamic effect
             # the light's Auto schedule already has.
-            if schedule.dynamic is None and (current := self.coordinator.data.auto_schedule) is not None:
+            elif schedule.dynamic is None and (current := self.coordinator.data.auto_schedule) is not None:
                 schedule.dynamic = current.dynamic
             await self.coordinator.async_set_auto_schedule(schedule, activate)
         except SunSyncError as err:
@@ -217,6 +224,8 @@ class SunSync:
         self.last_push = dt_util.now()
         self.last_schedule = schedule
         self.last_error = None
+        if weather is not None and weather.active:
+            weather.async_pushed(schedule)
         _LOGGER.debug(
             "Sun sync pushed to %s: sunrise %s-%s, sunset %s-%s",
             self.coordinator.address,
@@ -271,15 +280,24 @@ class SunSync:
 
 
 async def async_select_mode(coordinator: FluvalCoordinator, option: str) -> None:
-    """Switch to one of the user-facing modes (the light's three, or sun sync).
+    """Switch to one of the user-facing modes (the light's three, sun or weather sync).
 
     Picking any mode other than sun sync turns sun sync off, so the nightly
-    push doesn't overwrite a schedule the user has taken back control of.
+    push doesn't overwrite a schedule the user has taken back control of;
+    likewise any mode but weather sync turns weather sync off.
     """
     sun_sync = coordinator.sun_sync
+    weather = coordinator.weather_sync
+    if option == MODE_WEATHER_SYNC:
+        if weather is None:
+            raise SunSyncError("not_loaded", "The light isn't set up yet.")
+        await weather.async_enable()
+        return
     if option == MODE_SUN_SYNC:
         if sun_sync is None:
             raise SunSyncError("not_loaded", "The light isn't set up yet.")
+        if weather is not None:
+            weather.async_disable()
         await sun_sync.async_enable()
         return
     if sun_sync is not None:

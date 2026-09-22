@@ -15,6 +15,7 @@ from .const import DOMAIN, MODE_OPTIONS
 from .coordinator import FluvalCoordinator
 from .schedule import (
     EFFECTS,
+    WEATHER_GROUPS,
     AutoSchedule,
     ProSchedule,
     auto_from_dict,
@@ -30,6 +31,7 @@ from .schedule import (
     validate_auto,
     validate_effect,
     validate_pro,
+    weather_sync_from_dict,
 )
 from .sun_sync import SunSyncError, async_select_mode
 
@@ -59,6 +61,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_set_pro)
     websocket_api.async_register_command(hass, ws_set_mode)
     websocket_api.async_register_command(hass, ws_set_sun_sync)
+    websocket_api.async_register_command(hass, ws_set_weather_sync)
     websocket_api.async_register_command(hass, ws_play_effect)
 
 
@@ -108,6 +111,7 @@ def _describe(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         pro_source=pro_source,
         pro_effect=effect_to_dict(decode_effect(pro.dynamic)),
         sun_sync=coordinator.sun_sync.describe(auto) if coordinator.sun_sync is not None else None,
+        weather_sync=coordinator.weather_sync.describe() if coordinator.weather_sync is not None else None,
     )
     return info
 
@@ -170,6 +174,10 @@ async def ws_lights(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         {
             "lights": [_describe(hass, entry) for entry in entries],
             "effects": [{"id": effect_id, "name": name} for effect_id, name in EFFECTS.items()],
+            "weather_groups": [
+                {"id": group, "name": name, "conditions": list(conditions)}
+                for group, (name, conditions) in WEATHER_GROUPS.items()
+            ],
         },
     )
 
@@ -317,6 +325,43 @@ async def ws_set_sun_sync(
             msg["id"],
             "cannot_connect",
             "Sun sync is on, but the light couldn't be reached to push today's schedule. "
+            "It will keep retrying in the background.",
+        )
+        return
+    connection.send_result(msg["id"], _describe(hass, entry))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/set_weather_sync",
+        vol.Required("entry_id"): str,
+        vol.Required("config"): dict,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set_weather_sync(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Save weather sync settings, turn it (and sun sync) on, and push now."""
+    if (found := _lookup(hass, connection, msg)) is None:
+        return
+    entry, coordinator = found
+    config = weather_sync_from_dict(msg["config"])
+    if config is None or coordinator.weather_sync is None:
+        connection.send_error(msg["id"], "invalid_format", "Pick a weather entity and valid effects.")
+        return
+    try:
+        await coordinator.weather_sync.async_enable(config)
+    except SunSyncError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    except (BleakError, TimeoutError) as err:
+        _LOGGER.warning("Could not send to Fluval light %s: %s", coordinator.address, err)
+        connection.send_error(
+            msg["id"],
+            "cannot_connect",
+            "Weather sync is on, but the light couldn't be reached to push the current effect. "
             "It will keep retrying in the background.",
         )
         return

@@ -22,7 +22,7 @@ const CHANNEL_COLORS = {
 };
 const FALLBACK_COLORS = ["#5c6bc0", "#26a69a", "#d4e157", "#8d6e63", "#78909c"];
 
-const MODE_LABELS = { manual: "Manual", auto: "Auto", pro: "Pro", sun_sync: "Sun sync" };
+const MODE_LABELS = { manual: "Manual", auto: "Auto", pro: "Pro", sun_sync: "Sun sync", weather_sync: "Weather sync" };
 const SOURCE_LABELS = {
   light: "Loaded from the light.",
   saved: "The light isn't in this mode, so this is the schedule last saved from Home Assistant.",
@@ -273,6 +273,11 @@ const STYLE = `
   .status .err { color: var(--error-color, #db4437); flex-basis: 100%; }
   .fade-times { font-size: 13px; color: var(--secondary-text-color); margin-top: 6px; }
   input.offset { width: 80px; }
+  button.small { padding: 5px 12px; font-size: 13px; }
+  table.weather td { vertical-align: middle; }
+  table.weather tr.current td { background: var(--secondary-background-color, rgba(127,127,127,0.08)); }
+  .conditions { font-size: 12px; color: var(--secondary-text-color); }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--primary-color); color: var(--text-primary-color, #fff); }
 `;
 
 class FluvalSchedulePanel extends HTMLElement {
@@ -286,6 +291,8 @@ class FluvalSchedulePanel extends HTMLElement {
     this._busy = false;
     this._message = null;
     this._loadError = null;
+    this._effects = [];
+    this._weatherGroups = [];
   }
 
   set hass(hass) {
@@ -316,6 +323,7 @@ class FluvalSchedulePanel extends HTMLElement {
       const result = await this._hass.callWS({ type: `${DOMAIN}/lights`, refresh });
       this._lights = result.lights;
       this._effects = result.effects || [];
+      this._weatherGroups = result.weather_groups || [];
       this._loadError = null;
       if (!this._lights.some((l) => l.entry_id === this._selected)) {
         this._selected = this._lights.length ? this._lights[0].entry_id : null;
@@ -340,6 +348,7 @@ class FluvalSchedulePanel extends HTMLElement {
         auto: clone(light.auto),
         pro: clone(light.pro),
         sun: light.sun_sync ? clone(light.sun_sync.config) : null,
+        weather: light.weather_sync ? clone(light.weather_sync.config) : null,
         autoEffect: clone(light.auto_effect),
         proEffect: clone(light.pro_effect),
         activateAuto: true,
@@ -350,7 +359,20 @@ class FluvalSchedulePanel extends HTMLElement {
     // Sun sync settings saved before effects were editable have none; start
     // from the effect the Auto schedule has.
     if (draft.sun && !draft.sun.effect) draft.sun.effect = clone(light.auto_effect);
+    // Never set up: suggest the first weather entity.
+    if (draft.weather && !draft.weather.entity_id) draft.weather.entity_id = this._weatherEntities()[0] || "";
     return draft;
+  }
+
+  _weatherEntities() {
+    return Object.keys((this._hass && this._hass.states) || {})
+      .filter((id) => id.startsWith("weather."))
+      .sort();
+  }
+
+  _effectName(id) {
+    if (id === null || id === undefined) return "No effect";
+    return (this._effects.find((e) => e.id === id) || {}).name || `Effect ${id}`;
   }
 
   _replaceLight(updated) {
@@ -396,15 +418,26 @@ class FluvalSchedulePanel extends HTMLElement {
     );
   }
 
+  _saveWeatherSync() {
+    this._call(
+      { type: `${DOMAIN}/set_weather_sync`, entry_id: this._selected, config: this._draft().weather },
+      "Weather sync is on. The light's effect now follows the weather, on top of the sun-synced schedule."
+    );
+  }
+
   async _previewEffect(path) {
     let effect = this._draft();
     for (const key of path.split(".")) effect = effect[key];
-    const name = (this._effects.find((e) => e.id === effect.effect) || {}).name || `effect ${effect.effect}`;
+    await this._playEffect(effect.effect);
+  }
+
+  async _playEffect(id) {
+    const name = this._effectName(id);
     this._busy = true;
     this._message = null;
     this._renderContent();
     try {
-      await this._hass.callWS({ type: `${DOMAIN}/play_effect`, entry_id: this._selected, effect: effect.effect });
+      await this._hass.callWS({ type: `${DOMAIN}/play_effect`, entry_id: this._selected, effect: id });
       this._message = { type: "success", text: `Asked the light to play ${name}.` };
     } catch (err) {
       this._message = { type: "error", text: err.message || String(err) };
@@ -452,6 +485,7 @@ class FluvalSchedulePanel extends HTMLElement {
       const max = target.max === "" ? Infinity : Number(target.max);
       value = Math.max(min, Math.min(max, Math.round(Number(target.value) || 0)));
     } else if (target.dataset.type === "int") value = Number(target.value);
+    else if (target.dataset.type === "effect") value = target.value === "" ? null : Number(target.value);
     else value = target.value;
     let obj = this._draft();
     for (const key of path.slice(0, -1)) obj = obj[key];
@@ -496,6 +530,11 @@ class FluvalSchedulePanel extends HTMLElement {
           for (const key of path) obj = obj[key];
           ev.target.value = obj;
         }
+        // Effect choices change the weather chart and the preview buttons.
+        if (ev.target.hasAttribute("data-rerender-weather")) {
+          this._renderContent();
+          return;
+        }
         // Dim the effect's fields while it's switched off.
         if (ev.target.hasAttribute("data-rerender")) {
           const fields = ev.target.closest("label").nextElementSibling;
@@ -520,6 +559,9 @@ class FluvalSchedulePanel extends HTMLElement {
     else if (action === "save-pro") this._savePro();
     else if (action === "save-sun") this._saveSunSync();
     else if (action === "sun-off") this._setMode("auto");
+    else if (action === "save-weather") this._saveWeatherSync();
+    else if (action === "weather-off") this._setMode("sun_sync");
+    else if (action === "play-effect") this._playEffect(Number(el.dataset.effect));
     else if (action === "preview-effect") this._previewEffect(el.dataset.path);
     else if (action === "reset") {
       delete this._drafts[this._selected];
@@ -556,8 +598,17 @@ class FluvalSchedulePanel extends HTMLElement {
           <button data-action="tab" data-tab="auto" class="${this._tab === "auto" ? "active" : ""}">Auto schedule</button>
           <button data-action="tab" data-tab="pro" class="${this._tab === "pro" ? "active" : ""}">Pro schedule</button>
           <button data-action="tab" data-tab="sun" class="${this._tab === "sun" ? "active" : ""}">Sun sync</button>
+          <button data-action="tab" data-tab="weather" class="${this._tab === "weather" ? "active" : ""}">Weather sync</button>
         </div>
-        ${this._tab === "auto" ? this._renderAuto(light) : this._tab === "pro" ? this._renderPro(light) : this._renderSun(light)}
+        ${
+          this._tab === "auto"
+            ? this._renderAuto(light)
+            : this._tab === "pro"
+            ? this._renderPro(light)
+            : this._tab === "sun"
+            ? this._renderSun(light)
+            : this._renderWeather(light)
+        }
       </div>`;
     }
     this._content.innerHTML = html;
@@ -745,7 +796,11 @@ class FluvalSchedulePanel extends HTMLElement {
         <label class="check"><input type="checkbox" data-path="sun.turnoff_enabled" ${s.turnoff_enabled ? "checked" : ""}>Turn the light off at</label>
         <input type="time" value="${s.turnoff}" data-path="sun.turnoff" aria-label="Turn-off time">
       </div>
-      ${this._renderEffect("sun.effect", s.effect, "sun-synced schedule")}
+      ${
+        light.weather_sync && light.weather_sync.enabled
+          ? `<h3>Dynamic effect</h3><p class="note">Weather sync is on, so the effect follows the weather instead; see the Weather sync tab.</p>`
+          : this._renderEffect("sun.effect", s.effect, "sun-synced schedule")
+      }
       <h3>Nightly update</h3>
       <div class="row">
         <label class="field">Push the new day's schedule to the light at<input type="time" value="${s.push_time}" data-path="sun.push_time" required></label>
@@ -759,6 +814,87 @@ class FluvalSchedulePanel extends HTMLElement {
       </div>`;
   }
 
+  _effectSelect(path, value, label) {
+    const known = value === null || this._effects.some((e) => e.id === value);
+    const options = [
+      `<option value="" ${value === null ? "selected" : ""}>No effect</option>`,
+      ...(known ? [] : [`<option value="${value}" selected>Unknown effect (${value})</option>`]),
+      ...this._effects.map((e) => `<option value="${e.id}" ${e.id === value ? "selected" : ""}>${escapeHtml(e.name)}</option>`),
+    ].join("");
+    const preview =
+      value === null
+        ? ""
+        : `<button class="secondary small" data-action="play-effect" data-effect="${value}" ${this._busy ? "disabled" : ""} title="Experimental: asks the light to play this effect now">Preview</button>`;
+    return `<select data-path="${path}" data-type="effect" data-rerender-weather aria-label="${escapeHtml(label)}">${options}</select>${preview}`;
+  }
+
+  _renderWeather(light) {
+    const draft = this._draft();
+    const w = draft.weather;
+    const info = light.weather_sync;
+    const sunInfo = light.sun_sync;
+    const disabled = this._busy ? "disabled" : "";
+    const groupName = (id) => (this._weatherGroups.find((g) => g.id === id) || {}).name;
+    const entities = this._weatherEntities();
+    if (w.entity_id && !entities.includes(w.entity_id)) entities.unshift(w.entity_id);
+    const friendly = (id) => {
+      const state = this._hass.states[id];
+      return (state && state.attributes.friendly_name) || id;
+    };
+    const entityOptions = entities.length
+      ? entities
+          .map((id) => `<option value="${escapeHtml(id)}" ${id === w.entity_id ? "selected" : ""}>${escapeHtml(friendly(id))} (${escapeHtml(id)})</option>`)
+          .join("")
+      : `<option value="" selected>No weather entities found</option>`;
+    const weatherText = info.condition
+      ? `${escapeHtml(groupName(info.group) || info.condition)}${info.group ? "" : " (not mapped)"}`
+      : "unknown";
+    const status = info.enabled
+      ? `<span><strong class="on">Weather sync is on</strong></span>
+         <span>Weather: ${weatherText}</span>
+         ${info.period ? `<span>Now (${info.period === "night" ? "night" : "day"}): ${escapeHtml(this._effectName(info.effect))}</span>` : ""}
+         <span>Last change: ${escapeHtml(formatDateTime(info.last_update))}</span>
+         ${info.next_change ? `<span>Next ${info.period === "night" ? "sunrise" : "sunset"} switch: ${escapeHtml(formatDateTime(info.next_change))}</span>` : ""}`
+      : `<span><strong>Weather sync is off</strong></span>${info.condition ? `<span>Weather: ${weatherText}</span>` : ""}`;
+    const error = info.last_error ? `<span class="err">${escapeHtml(info.last_error)}</span>` : "";
+    const rows = this._weatherGroups
+      .map(
+        (g) => `<tr class="${g.id === info.group ? "current" : ""}">
+          <td>${escapeHtml(g.name)}${g.id === info.group ? ` <span class="badge">now</span>` : ""}<div class="conditions">${g.conditions.map(escapeHtml).join(", ")}</div></td>
+          <td><div class="row" style="gap:8px">${this._effectSelect(`weather.effects.${g.id}`, w.effects[g.id], `Effect for ${g.name}`)}</div></td>
+        </tr>`
+      )
+      .join("");
+    return `
+      <div class="status">${status}${error}</div>
+      <p class="muted">Weather sync runs sun sync (its fades, brightness and nightly update come from the Sun sync tab) and picks the light's dynamic effect from the weather. Whenever the weather entity's condition changes, and when the sunrise fade starts or the sunset fade ends, Home Assistant pushes the matching effect to the light.</p>
+      <div class="chart" data-chart></div>
+      <h3>Weather entity</h3>
+      <div class="row">
+        <select data-path="weather.entity_id" aria-label="Weather entity" ${entities.length ? "" : "disabled"}>${entityOptions}</select>
+      </div>
+      <h3>Daytime effect for each kind of weather</h3>
+      <div class="table-wrap"><table class="weather">
+        <thead><tr><th>Weather</th><th>Effect</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <p class="note">Played from the start of the sunrise fade to the end of the sunset fade.</p>
+      <h3>Moonlight</h3>
+      <div class="row" style="gap:8px">
+        <label class="field">At night play<span class="row" style="gap:8px">${this._effectSelect("weather.moonlight", w.moonlight, "Moonlight effect")}</span></label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <label class="check"><input type="checkbox" data-path="weather.weather_at_night" data-rerender-weather ${w.weather_at_night ? "checked" : ""}>Keep weather effects at night</label>
+      </div>
+      <p class="note">With this on, moonlight plays on nights whose weather has no effect (e.g. clear skies) and a storm keeps flashing after dark; with it off, nights always get moonlight.</p>
+      <div class="actions">
+        <span class="spacer"></span>
+        ${info.enabled ? `<button class="secondary" data-action="weather-off" ${disabled} title="Keeps sun sync running with its own effect">Turn off weather sync</button>` : ""}
+        <button class="secondary" data-action="reset" ${disabled}>Reset</button>
+        <button class="primary" data-action="save-weather" ${disabled || (w.entity_id && sunInfo && sunInfo.sunrise ? "" : "disabled")}>${this._busy ? "Saving…" : info.enabled ? "Save & push now" : "Turn on & push now"}</button>
+      </div>`;
+  }
+
   _renderChart() {
     const container = this.shadowRoot.querySelector("[data-chart]");
     const light = this._light();
@@ -769,6 +905,7 @@ class FluvalSchedulePanel extends HTMLElement {
     let markers = [];
     const effect = { auto: draft.autoEffect, pro: draft.proEffect, sun: draft.sun && draft.sun.effect }[this._tab];
     const bands = [];
+    if (this._tab === "weather") return this._renderWeatherChart(container, light, draft);
     if (effect && effect.enabled && effect.start && effect.end && effect.start !== effect.end) {
       const name = (this._effects.find((e) => e.id === effect.effect) || {}).name || "Effect";
       bands.push({ start: toMinutes(effect.start), end: toMinutes(effect.end), label: name });
@@ -797,6 +934,30 @@ class FluvalSchedulePanel extends HTMLElement {
     // A cleared or half-typed time can't be plotted; keep the last chart.
     if (curves.flat(2).some(Number.isNaN) || markers.some((m) => Number.isNaN(m.at))) return;
     container.innerHTML = chartSvg(curves, channels, markers, bands);
+  }
+
+  // The sun-synced day with the effects weather sync would play right now
+  // shaded over its day and night periods.
+  _renderWeatherChart(container, light, draft) {
+    const info = light.sun_sync;
+    if (!info || !info.sunrise || !draft.sun) return;
+    const a = sunSchedule(draft.sun, info.sunrise, info.sunset);
+    const curves = autoCurves(a, light.channels.length);
+    const markers = [
+      { at: toMinutes(info.sunrise), label: "Sunrise", cls: "sun" },
+      { at: toMinutes(info.sunset), label: "Sunset", cls: "sun" },
+    ];
+    if (curves.flat(2).some(Number.isNaN)) return;
+    const w = draft.weather;
+    const group = light.weather_sync && light.weather_sync.group;
+    const weather = group ? w.effects[group] : null;
+    const night = w.weather_at_night && weather !== null && weather !== undefined ? weather : w.moonlight;
+    const bands = [];
+    const dayStart = toMinutes(a.sunrise_start);
+    const dayEnd = toMinutes(a.sunset_end);
+    if (weather !== null && weather !== undefined) bands.push({ start: dayStart, end: dayEnd, label: this._effectName(weather) });
+    if (night !== null && night !== undefined) bands.push({ start: dayEnd, end: dayStart, label: this._effectName(night) });
+    container.innerHTML = chartSvg(curves, light.channels, markers, bands);
   }
 }
 

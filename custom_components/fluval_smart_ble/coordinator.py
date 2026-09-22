@@ -22,6 +22,7 @@ from .const import (
     MODE_MANUAL,
     MODE_PRO,
     MODE_SUN_SYNC,
+    MODE_WEATHER_SYNC,
     MODES,
     UPDATE_INTERVAL_SECONDS,
 )
@@ -46,6 +47,7 @@ from .schedule import AutoSchedule, ProSchedule
 
 if TYPE_CHECKING:
     from .sun_sync import SunSync
+    from .weather_sync import WeatherSync
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,14 +96,17 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         self._read_waiters: list[asyncio.Future[bytes]] = []
         self._unloading = False
         self.sun_sync: SunSync | None = None
+        self.weather_sync: WeatherSync | None = None
 
     @property
     def effective_mode(self) -> str | None:
-        """The mode as the user sees it: the light's own, or sun sync on top of Auto."""
+        """The mode as the user sees it: the light's own, or sun/weather sync on top of Auto."""
         mode = self.data.mode
         if mode is None:
             return None
         if mode == MODE_AUTO and self.sun_sync is not None and self.sun_sync.enabled:
+            if self.weather_sync is not None and self.weather_sync.active:
+                return MODE_WEATHER_SYNC
             return MODE_SUN_SYNC
         return MODES.get(mode)
 
