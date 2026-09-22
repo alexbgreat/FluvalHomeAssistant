@@ -16,54 +16,5 @@
       "no_devices_found": "No Fluval Smart lights were found nearby.",
       "already_configured": "This light is already configured."
     }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Light schedule",
-        "description": "Choose which on-device schedule to edit. The light runs these by itself, against its own clock, while it is in Auto or Pro mode.",
-        "menu_options": {
-          "auto": "Auto schedule (sunrise / sunset)",
-          "pro_points": "Pro schedule (4-10 points)"
-        }
-      },
-      "auto": {
-        "title": "Auto schedule",
-        "description": "The light fades from night to day brightness over the sunrise window, and back to night brightness over the sunset window. Brightness is a percentage per LED channel.",
-        "data": {
-          "sunrise_start": "Sunrise starts",
-          "sunrise_end": "Sunrise ends",
-          "sunset_start": "Sunset starts",
-          "sunset_end": "Sunset ends",
-          "turnoff_enabled": "Turn off at a fixed time",
-          "turnoff": "Turn-off time",
-          "activate": "Switch the light to Auto mode after saving"
-        }
-      },
-      "pro_points": {
-        "title": "Pro schedule",
-        "description": "How many points should the daily schedule have? Brightness is interpolated between consecutive points.",
-        "data": {
-          "point_count": "Number of points"
-        }
-      },
-      "pro": {
-        "title": "Pro schedule",
-        "description": "Set the time of day and per-channel brightness (%) for each of the {count} points. They are sorted by time before being sent to the light.",
-        "data": {
-          "activate": "Switch the light to Pro mode after saving"
-        }
-      }
-    },
-    "error": {
-      "sunrise_order": "Sunrise must start before it ends.",
-      "sunset_order": "Sunset must start before it ends.",
-      "sunrise_after_sunset": "Sunrise must end before sunset starts.",
-      "duplicate_times": "Each point needs a different time of day.",
-      "cannot_connect": "Could not send the schedule to the light. Make sure it is powered on and in Bluetooth range, then try again."
-    },
-    "abort": {
-      "not_loaded": "The light isn't currently connected. Wait for it to finish setting up, then try again."
-    }
   }
 }

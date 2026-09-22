@@ -61,11 +61,11 @@ def clamp_percent(value: Any) -> int:
 
 
 def format_time(value: TimeOfDay) -> str:
-    return f"{value.hour:02d}:{value.minute:02d}:00"
+    return f"{value.hour:02d}:{value.minute:02d}"
 
 
 def parse_time(value: str) -> TimeOfDay:
-    """Parse "HH:MM" or "HH:MM:SS" (the time selector's format), dropping seconds."""
+    """Parse "HH:MM" (or "HH:MM:SS", dropping the seconds)."""
     parts = value.split(":")
     return TimeOfDay(int(parts[0]), int(parts[1]))
 
@@ -92,20 +92,26 @@ def default_pro_schedule(channel_count: int, point_count: int = PRO_MIN_POINTS) 
     return ProSchedule(points)
 
 
-def resize_pro_schedule(schedule: ProSchedule, channel_count: int, point_count: int) -> ProSchedule:
-    """Grow or shrink a Pro schedule to `point_count` points, keeping existing ones."""
-    points = [ProPoint(p.at, list(p.values)) for p in schedule.sorted_points()[:point_count]]
-    if len(points) < point_count:
-        taken = {p.at.hour * 60 + p.at.minute for p in points}
-        for candidate in default_pro_schedule(channel_count, point_count).points:
-            if len(points) >= point_count:
-                break
-            minutes = candidate.at.hour * 60 + candidate.at.minute
-            while minutes in taken:
-                minutes = (minutes + 1) % (24 * 60)
-            taken.add(minutes)
-            points.append(ProPoint(TimeOfDay(minutes // 60, minutes % 60), candidate.values))
-    return ProSchedule(sorted(points, key=lambda p: (p.at.hour, p.at.minute)), schedule.dynamic)
+def _minutes(value: TimeOfDay) -> int:
+    return value.hour * 60 + value.minute
+
+
+def validate_auto(schedule: AutoSchedule) -> str | None:
+    """Return an error code if the Auto schedule's windows are out of order."""
+    if _minutes(schedule.sunrise_start) >= _minutes(schedule.sunrise_end):
+        return "sunrise_order"
+    if _minutes(schedule.sunset_start) >= _minutes(schedule.sunset_end):
+        return "sunset_order"
+    if _minutes(schedule.sunrise_end) > _minutes(schedule.sunset_start):
+        return "sunrise_after_sunset"
+    return None
+
+
+def validate_pro(schedule: ProSchedule) -> str | None:
+    """Return an error code if two Pro points share a time of day."""
+    if len({_minutes(p.at) for p in schedule.points}) != len(schedule.points):
+        return "duplicate_times"
+    return None
 
 
 # --- (de)serialization to config entry options -------------------------------

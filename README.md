@@ -40,8 +40,9 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
   polling to stay in sync with changes made from the FluvalSmart app or
   the light's own buttons.
 
-- Schedule editor: program the light's on-device Auto (sunrise/sunset)
-  and Pro (4-10 point) schedules from Home Assistant — see
+- **Aquarium Light** sidebar panel: program the light's on-device Auto
+  (sunrise/sunset) and Pro (4-10 point) schedules from Home Assistant,
+  with a live 24-hour brightness chart — see
   [Configuring the light schedule](#configuring-the-light-schedule).
 
 ## Installation
@@ -68,22 +69,29 @@ Once the light is discovered, a notification invites you to add it under
 
 The light runs its Auto and Pro schedules by itself, against its own
 clock, so they keep working even when Home Assistant is offline. To edit
-them, go to **Settings → Devices & Services → Fluval Smart**, click
-**Configure** on the light, and pick a schedule:
+them, open **Aquarium Light** in the Home Assistant sidebar (it appears
+for admin users once a light is set up). If you have several lights,
+pick one from the drop-down. The panel also shows and switches the
+light's current mode (Manual / Auto / Pro), and has two tabs:
 
-- **Auto schedule (sunrise / sunset)**: the sunrise window (the light
-  fades from night to day brightness), the sunset window (it fades back),
-  day and night brightness for each LED channel, and an optional fixed
-  daily turn-off time.
-- **Pro schedule**: first choose how many points (4-10) the day has, then
-  set a time of day and a brightness for each LED channel at every point.
-  The light interpolates between consecutive points.
+- **Auto schedule**: the sunrise window (the light fades from night to
+  day brightness), the sunset window (it fades back), day and night
+  brightness sliders for each LED channel, and an optional fixed daily
+  turn-off time.
+- **Pro schedule**: a table of 4-10 points, each a time of day and a
+  brightness for each LED channel. Add or remove points as needed; the
+  light interpolates between consecutive points, wrapping around
+  midnight.
+
+Both tabs plot the resulting brightness of every channel across the day
+as you edit.
 
 Brightness is a whole percentage per channel. Saving sends the schedule
 to the light right away and, unless you untick the option, switches the
-light into that mode. The editor is prefilled with the schedule the
-light last reported (it only reports the one for its active mode),
-otherwise with what was last saved from Home Assistant. A dynamic effect
+light into that mode. The panel is prefilled with the schedule the
+light last reported (it only reports the one for its active mode; use
+**Refresh** to re-read it), otherwise with what was last saved from Home
+Assistant. A dynamic effect
 (storm/cloud/moonlight) set up from the FluvalSmart app is left as is.
 
 The schedule commands were reverse engineered from the app but haven't

@@ -172,7 +172,7 @@ light) or `←` (light to app/HA, i.e. a notification).
 | `0x04` | `CMD_CTRL` | → | `2×N` bytes: per-channel brightness, **big-endian** uint16, tenths of a percent (0-1000 = 0.0-100.0%); `0xFFFF` means "leave this channel unchanged" | Implemented (`light` brightness/RGBW, `number` per channel) |
 | `0x05` | `CMD_READ` | → / ← | no args (request); response layout depends on current mode, see below | Implemented (state polling) |
 | `0x06` | `CMD_CUSTOM` | → | 1 byte: preset slot index `0`-`3` | Reference only, see SCHEDULING.md |
-| `0x07` | `CMD_CYCLE` | → | Auto-mode schedule, see SCHEDULING.md | Implemented (options flow schedule editor) |
+| `0x07` | `CMD_CYCLE` | → | Auto-mode schedule, see SCHEDULING.md | Implemented (sidebar schedule editor) |
 | `0x08` | `CMD_CHN_INC` | → | 2 bytes: channel bitmask, amount | Reference only, see SCHEDULING.md |
 | `0x09` | `CMD_CHN_DEC` | → | 2 bytes: channel bitmask, amount | Reference only, see SCHEDULING.md |
 | `0x0A` | `CMD_DYN` | → | 1 byte: dynamic-effect ID | Reference only, see SCHEDULING.md |
@@ -181,7 +181,7 @@ light) or `←` (light to app/HA, i.e. a notification).
 | `0x0D` | `CMD_READTIME` | → / ← | no args (request); response layout not captured | Reference only (request builder exists conceptually; not wired up) |
 | `0x0E` | `CMD_SYNCTIME` | → | 7 bytes: year-2000, month(0-based), day, weekday(0=Sun..6=Sat), hour, minute, second | **Implemented** (auto-sync on connect + "Sync Time" button) |
 | `0x0F` | `CMD_FIND` | → | no args | Implemented ("Find" button) |
-| `0x10` | `CMD_PRO` | → | Pro-mode schedule, see SCHEDULING.md | Implemented (options flow schedule editor) |
+| `0x10` | `CMD_PRO` | → | Pro-mode schedule, see SCHEDULING.md | Implemented (sidebar schedule editor) |
 | `0x11` | `CMD_DYNAMIC_PERIOD` | → | 6 bytes: week bitmask, RampTime×4, mode | Reference only, see SCHEDULING.md |
 
 Only `CMD_READ` is known to produce a notification in reply; the app's

@@ -1,8 +1,9 @@
 # Scheduling RPCs (Auto / Pro modes)
 
 `CMD_CYCLE` (Auto) and `CMD_PRO` (Pro) are implemented: the
-integration's options flow (**Configure** on the integration card) edits
-both schedules and programs them onto the light (`protocol.py:
+integration's **Aquarium Light** sidebar panel (`panel.py`, `api.py`,
+`frontend/fluval-schedule-panel.js`) edits both schedules and programs
+them onto the light (`protocol.py:
 frame_set_auto()` / `frame_set_pro()`), and the Auto/Pro-mode `CMD_READ`
 responses are decoded on a best-effort basis to prefill that editor
 (`parse_auto_schedule()` / `parse_pro_schedule()`). The implementation
