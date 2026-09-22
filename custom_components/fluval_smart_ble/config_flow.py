@@ -1,6 +1,7 @@
 """Config flow for the Fluval Smart BLE integration."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -20,9 +21,17 @@ except ImportError:  # Home Assistant core < 2024.7
 from .const import CONF_MODEL_ID, DOMAIN, SERVICE_UUID
 from .models import get_model
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def _extract_model_id(discovery_info: BluetoothServiceInfoBleak) -> int | None:
     """Pull the 2-byte model ID out of the advertisement's manufacturer data."""
+    _LOGGER.debug(
+        "Fluval light %s advertised manufacturer_data=%s service_data=%s",
+        discovery_info.address,
+        {hex(k): v.hex() for k, v in discovery_info.manufacturer_data.items()},
+        {k: v.hex() for k, v in discovery_info.service_data.items()},
+    )
     for payload in discovery_info.manufacturer_data.values():
         if len(payload) >= 2:
             return (payload[0] << 8) | payload[1]
