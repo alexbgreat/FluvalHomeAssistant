@@ -1,0 +1,20 @@
+{
+  "config": {
+    "step": {
+      "confirm": {
+        "title": "Add Fluval Smart light",
+        "description": "Set up {name} ({model})?"
+      },
+      "user": {
+        "title": "Add Fluval Smart light",
+        "data": {
+          "address": "Device"
+        }
+      }
+    },
+    "abort": {
+      "no_devices_found": "No Fluval Smart lights were found nearby.",
+      "already_configured": "This light is already configured."
+    }
+  }
+}
