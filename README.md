@@ -40,11 +40,10 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
   polling to stay in sync with changes made from the FluvalSmart app or
   the light's own buttons.
 
-Programming the Auto/Pro on-device schedules from Home Assistant isn't
-implemented yet — use the official app for that; this integration can
-still switch the light in and out of whatever schedule is already stored
-on it. The scheduling commands are fully documented for future work in
-[docs/SCHEDULING.md](docs/SCHEDULING.md).
+- **Aquarium Light** sidebar panel: program the light's on-device Auto
+  (sunrise/sunset) and Pro (4-10 point) schedules from Home Assistant,
+  with a live 24-hour brightness chart — see
+  [Configuring the light schedule](#configuring-the-light-schedule).
 
 ## Installation
 
@@ -65,6 +64,41 @@ adapter (or an ESPHome/Shelly Bluetooth proxy) in range of the light.
 Once the light is discovered, a notification invites you to add it under
 **Settings → Devices & Services**. You can also add it manually from
 **Settings → Devices & Services → Add Integration → Fluval Smart**.
+
+## Configuring the light schedule
+
+The light runs its Auto and Pro schedules by itself, against its own
+clock, so they keep working even when Home Assistant is offline. To edit
+them, open **Aquarium Light** in the Home Assistant sidebar (it appears
+for admin users once a light is set up). If you have several lights,
+pick one from the drop-down. The panel also shows and switches the
+light's current mode (Manual / Auto / Pro), and has two tabs:
+
+- **Auto schedule**: the sunrise window (the light fades from night to
+  day brightness), the sunset window (it fades back), day and night
+  brightness sliders for each LED channel, and an optional fixed daily
+  turn-off time.
+- **Pro schedule**: a table of 4-10 points, each a time of day and a
+  brightness for each LED channel. Add or remove points as needed; the
+  light interpolates between consecutive points, wrapping around
+  midnight.
+
+Both tabs plot the resulting brightness of every channel across the day
+as you edit.
+
+Brightness is a whole percentage per channel. Saving sends the schedule
+to the light right away and, unless you untick the option, switches the
+light into that mode. The panel is prefilled with the schedule the
+light last reported (it only reports the one for its active mode; use
+**Refresh** to re-read it), otherwise with what was last saved from Home
+Assistant. A dynamic effect
+(storm/cloud/moonlight) set up from the FluvalSmart app is left as is.
+
+The schedule commands were reverse engineered from the app but haven't
+been exercised against every model; if a light doesn't behave as
+expected after saving, enable debug logging for
+`custom_components.fluval_smart_ble` and open an issue with the logged
+frames.
 
 ## Protocol documentation
 

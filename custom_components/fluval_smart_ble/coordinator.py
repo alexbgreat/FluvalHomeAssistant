@@ -17,22 +17,28 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     CHAR_NOTIFY_UUID,
     CHAR_WRITE_UUID,
+    MODE_AUTO,
     MODE_MANUAL,
+    MODE_PRO,
     UPDATE_INTERVAL_SECONDS,
 )
 from .models import FluvalModel
 from .protocol import (
     FrameReassembler,
+    ParsedState,
     encode_message,
     frame_find,
     frame_read,
+    frame_set_auto,
     frame_set_channels,
     frame_set_mode,
+    frame_set_pro,
     frame_sync_time,
     frame_turn_off,
     frame_turn_on,
     parse_read_response,
 )
+from .schedule import AutoSchedule, ProSchedule
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +47,9 @@ CONNECT_SETTLE_DELAY = 0.7
 READ_RESPONSE_TIMEOUT = 5
 MAX_WRITE_CHUNK = 17
 CHUNK_DELAY = 0.008
+# Pause between programming a schedule and switching into its mode, so a
+# long multi-chunk schedule frame is processed before the mode change.
+SCHEDULE_MODE_DELAY = 0.3
 
 
 @dataclass
@@ -50,6 +59,10 @@ class FluvalState:
     is_on: bool | None = None
     mode: int | None = None
     channel_values: list[float] = field(default_factory=list)
+    # The on-device schedules, as last read back from the light (only
+    # reported while the light is in that mode) or last programmed here.
+    auto_schedule: AutoSchedule | None = None
+    pro_schedule: ProSchedule | None = None
 
 
 class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
@@ -116,12 +129,19 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
                 f"state (frame={frame.hex()}, expected {len(self.model.channels)} channels)"
             )
 
+        return self._apply_parsed(parsed)
+
+    def _apply_parsed(self, parsed: ParsedState) -> FluvalState:
         state = self.data
         state.mode = parsed.mode
         if parsed.mode == MODE_MANUAL:
             state.is_on = parsed.is_on
             if parsed.channel_values is not None:
                 state.channel_values = parsed.channel_values
+        if parsed.auto_schedule is not None:
+            state.auto_schedule = parsed.auto_schedule
+        if parsed.pro_schedule is not None:
+            state.pro_schedule = parsed.pro_schedule
         return state
 
     def _disconnected_callback(self, client: BleakClientWithServiceCache) -> None:
@@ -200,13 +220,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         parsed = parse_read_response(frame, len(self.model.channels))
         if parsed is None:
             return
-        state = self.data
-        state.mode = parsed.mode
-        if parsed.mode == MODE_MANUAL:
-            state.is_on = parsed.is_on
-            if parsed.channel_values is not None:
-                state.channel_values = parsed.channel_values
-        self.async_set_updated_data(state)
+        self.async_set_updated_data(self._apply_parsed(parsed))
 
     async def _async_write(self, frame: bytes) -> None:
         client = self._client
@@ -280,3 +294,25 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         """Ask the light to blink so it can be located."""
         await self._async_ensure_connected()
         await self._async_write(frame_find())
+
+    async def async_set_auto_schedule(self, schedule: AutoSchedule, activate: bool) -> None:
+        """Program the Auto (sunrise/sunset) schedule, optionally switching to it."""
+        await self._async_ensure_connected()
+        await self._async_write(frame_set_auto(schedule))
+        self.data.auto_schedule = schedule
+        if activate:
+            await asyncio.sleep(SCHEDULE_MODE_DELAY)
+            await self._async_write(frame_set_mode(MODE_AUTO))
+            self.data.mode = MODE_AUTO
+        self.async_set_updated_data(self.data)
+
+    async def async_set_pro_schedule(self, schedule: ProSchedule, activate: bool) -> None:
+        """Program the Pro (multi-point) schedule, optionally switching to it."""
+        await self._async_ensure_connected()
+        await self._async_write(frame_set_pro(schedule))
+        self.data.pro_schedule = schedule
+        if activate:
+            await asyncio.sleep(SCHEDULE_MODE_DELAY)
+            await self._async_write(frame_set_mode(MODE_PRO))
+            self.data.mode = MODE_PRO
+        self.async_set_updated_data(self.data)

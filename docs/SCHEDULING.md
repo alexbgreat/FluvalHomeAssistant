@@ -1,10 +1,16 @@
 # Scheduling RPCs (Auto / Pro modes)
 
-None of the commands on this page are implemented by this integration
-today - it can switch a light *into* Auto or Pro mode (`CMD_MODE`, via
-the `select` entity) and read back which mode is active, but it cannot
-program what either schedule actually contains. This document exists so
-that work can be picked up later without re-reverse-engineering it.
+`CMD_CYCLE` (Auto) and `CMD_PRO` (Pro) are implemented: the
+integration's **Aquarium Light** sidebar panel (`panel.py`, `api.py`,
+`frontend/fluval-schedule-panel.js`) edits both schedules and programs
+them onto the light (`protocol.py:
+frame_set_auto()` / `frame_set_pro()`), and the Auto/Pro-mode `CMD_READ`
+responses are decoded on a best-effort basis to prefill that editor
+(`parse_auto_schedule()` / `parse_pro_schedule()`). The implementation
+always sends Auto's turn-off block (disabled via its enable byte when
+unused) so the variant is unambiguous, doesn't edit the dynamic-effect
+trailer, and re-sends one read back from the light unchanged. The other
+commands on this page remain reference only.
 
 Everything here comes from `CommUtil.java` (the builders:
 `setLedAuto`, `setLedPro`, `setLedDynamicPeriod`, `sendKey`,
