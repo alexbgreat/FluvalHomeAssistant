@@ -85,34 +85,59 @@ def expected_wire_length(wire_prefix: bytes) -> int | None:
 
 
 class FrameReassembler:
-    """Reassembles a decoded command frame from one or more BLE notifications."""
+    """Reassembles a decoded command frame from one or more BLE notifications.
+
+    A response longer than ~17 plaintext bytes doesn't arrive as one
+    encode_message() output split across notifications by the BLE
+    transport - each notification is its OWN complete, independently
+    wrapped chunk (its own random key and [0x54, len, key] header),
+    mirroring how the app's BleManager.sendBytes() chunks and
+    independently encodes its own outgoing writes longer than 17 bytes.
+    So every notification must be decoded on its own, and the *decoded
+    plaintexts* concatenated to rebuild the full logical frame - not the
+    raw wire bytes concatenated and decoded once.
+    """
 
     def __init__(self) -> None:
-        self._buffer = bytearray()
+        self._raw_buffer = bytearray()
+        self._plaintext = bytearray()
         self._last_update = 0.0
 
     def feed(self, data: bytes) -> bytes | None:
         """Feed newly received notification bytes.
 
-        Returns the decoded plaintext frame once a complete message has
-        been received, otherwise None.
+        Returns the decoded, checksum-valid plaintext frame once a
+        complete message has been reassembled, otherwise None.
         """
         now = time.monotonic()
-        if self._buffer and (now - self._last_update) > REASSEMBLY_TIMEOUT:
-            self._buffer.clear()
+        if (self._raw_buffer or self._plaintext) and (now - self._last_update) > REASSEMBLY_TIMEOUT:
+            self._raw_buffer.clear()
+            self._plaintext.clear()
         self._last_update = now
-        self._buffer.extend(data)
+        self._raw_buffer.extend(data)
 
-        total = expected_wire_length(bytes(self._buffer))
-        if total is None or len(self._buffer) < total:
-            return None
+        while True:
+            total = expected_wire_length(bytes(self._raw_buffer))
+            if total is None or len(self._raw_buffer) < total:
+                return None
 
-        wire = bytes(self._buffer[:total])
-        del self._buffer[:total]
-        try:
-            return decode_message(wire)
-        except ValueError:
-            return None
+            wire = bytes(self._raw_buffer[:total])
+            del self._raw_buffer[:total]
+            try:
+                chunk = decode_message(wire)
+            except ValueError:
+                self._plaintext.clear()
+                continue
+            self._plaintext.extend(chunk)
+
+            frame = bytes(self._plaintext)
+            if len(frame) >= 3 and frame[0] == FRAME_HEADER and xor_checksum(frame[:-1]) == frame[-1]:
+                self._plaintext.clear()
+                return frame
+            # Not yet a complete, checksum-valid frame - keep looping in
+            # case more whole chunks are already sitting in the raw
+            # buffer; otherwise the length check above returns None and
+            # we wait for the next notification.
 
 
 def build_frame(cmd: int, args: bytes = b"") -> bytes:
