@@ -9,8 +9,12 @@ responses are decoded on a best-effort basis to prefill that editor
 (`parse_auto_schedule()` / `parse_pro_schedule()`). The implementation
 always sends Auto's turn-off block (disabled via its enable byte when
 unused) so the variant is unambiguous, doesn't edit the dynamic-effect
-trailer, and re-sends one read back from the light unchanged. The other
-commands on this page remain reference only.
+trailer, and re-sends one read back from the light unchanged. The
+integration's Sun sync mode (`sun_sync.py`) reuses `CMD_CYCLE`: it
+recomputes the Auto schedule daily from Home Assistant's sun times and
+pushes it nightly; nothing about it is stored on the light beyond an
+ordinary Auto schedule. The other commands on this page remain reference
+only.
 
 Everything here comes from `CommUtil.java` (the builders:
 `setLedAuto`, `setLedPro`, `setLedDynamicPeriod`, `sendKey`,

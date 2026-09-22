@@ -29,7 +29,11 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
   channel (matching the sliders in the manual tab of the official app),
   for models whose channels don't map onto a single color.
 - `select` entity: switch the light between Manual, Auto (sunrise/sunset
-  ramp) and Pro (multi-point schedule) modes.
+  ramp), Pro (multi-point schedule) and Sun sync modes.
+- Sun sync mode: Home Assistant recomputes the Auto schedule every day
+  from the real sunrise and sunset at your location (with configurable
+  offsets) and pushes it to the light nightly — see
+  [Sun sync](#sun-sync).
 - `button` entities: make the light blink so it can be physically
   located, and push the current time to the light's on-board clock on
   demand.
@@ -72,7 +76,7 @@ clock, so they keep working even when Home Assistant is offline. To edit
 them, open **Aquarium Light** in the Home Assistant sidebar (it appears
 for admin users once a light is set up). If you have several lights,
 pick one from the drop-down. The panel also shows and switches the
-light's current mode (Manual / Auto / Pro), and has two tabs:
+light's current mode (Manual / Auto / Pro / Sun sync), and has three tabs:
 
 - **Auto schedule**: the sunrise window (the light fades from night to
   day brightness), the sunset window (it fades back), day and night
@@ -82,6 +86,7 @@ light's current mode (Manual / Auto / Pro), and has two tabs:
   brightness for each LED channel. Add or remove points as needed; the
   light interpolates between consecutive points, wrapping around
   midnight.
+- **Sun sync**: see [below](#sun-sync).
 
 Both tabs plot the resulting brightness of every channel across the day
 as you edit.
@@ -99,6 +104,44 @@ been exercised against every model; if a light doesn't behave as
 expected after saving, enable debug logging for
 `custom_components.fluval_smart_ble` and open an issue with the logged
 frames.
+
+### Sun sync
+
+The light's own clock only knows the time of day, so its Auto mode fades
+at the same times all year. Sun sync is a mode run by Home Assistant on
+top of it: every night Home Assistant works out the coming day's sunrise
+and sunset for the location set under **Settings → System → General**,
+applies your offsets, and writes the result to the light as its Auto
+schedule (the light stays in Auto mode and runs it by itself).
+
+In the **Sun sync** tab you set:
+
+- **Sunrise / sunset fade**: when each fade starts relative to the sun
+  event (negative = before; up to ±6 hours) and how long it lasts (up to
+  4 hours). The default sunrise fade starts at sunrise, and the default
+  sunset fade ends exactly at sunset (starts 60 min before, lasts 60).
+- **Day / night brightness** per channel, and an optional daily turn-off
+  time, as in the Auto tab.
+- **Nightly update** time (default 03:00): when the new day's schedule is
+  pushed. Pick a time between sunset and sunrise. If the light can't be
+  reached then, Home Assistant retries every 10 minutes for 3 hours. A
+  push is also made whenever Home Assistant starts, to catch up on nights
+  it was offline.
+
+The chart shows the day's sun times and the resulting fades as you edit.
+**Turn on & push now** saves the settings, pushes today's schedule (a
+push made after noon uses the next day's sun times) and switches the
+light to Auto. Settings that would make a fade run past midnight or
+overlap the other fade are rejected, since the light's schedule is a
+single day.
+
+Choosing any other mode — from the panel or the `select` entity — turns
+sun sync off, as does saving a schedule from the Auto tab (or saving a
+Pro schedule that switches to Pro mode), so the nightly push never
+overwrites a schedule you set by hand. If the light is switched out of
+Auto from the FluvalSmart app, the mode shows as that mode, and the
+nightly push keeps the stored Auto schedule current without switching
+the light back.
 
 ## Protocol documentation
 

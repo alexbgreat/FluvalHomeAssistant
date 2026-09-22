@@ -40,6 +40,11 @@ MODES = {
 }
 MODES_REVERSE = {v: k for k, v in MODES.items()}
 
+# Not a mode of the light itself: Home Assistant runs the light in Auto
+# mode and rewrites its schedule nightly to follow the real sun.
+MODE_SUN_SYNC = "sun_sync"
+MODE_OPTIONS = [*MODES.values(), MODE_SUN_SYNC]
+
 # A channel value of 0xFFFF ("-1" as a Java short) means "leave this
 # channel's brightness unchanged" when sent in a CMD_CTRL frame.
 CHANNEL_UNCHANGED = 0xFFFF
