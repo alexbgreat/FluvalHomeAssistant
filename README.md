@@ -43,7 +43,8 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
 Programming the Auto/Pro on-device schedules from Home Assistant isn't
 implemented yet — use the official app for that; this integration can
 still switch the light in and out of whatever schedule is already stored
-on it.
+on it. The scheduling commands are fully documented for future work in
+[docs/SCHEDULING.md](docs/SCHEDULING.md).
 
 ## Installation
 
@@ -65,28 +66,23 @@ Once the light is discovered, a notification invites you to add it under
 **Settings → Devices & Services**. You can also add it manually from
 **Settings → Devices & Services → Add Integration → Fluval Smart**.
 
-## Protocol notes
+## Protocol documentation
 
-For anyone extending this integration or debugging with a BLE sniffer:
+Fluval publishes no protocol spec; everything this integration does was
+recovered by reverse engineering the FluvalSmart Android app. The full
+write-up lives in [`docs/`](docs/), split by topic:
 
-- GATT service `00001000-0000-1000-8000-00805f9b34fb`, write characteristic
-  `...1001...`, notify characteristic `...1002...`.
-- Every message (in both directions) is wrapped as
-  `[0x54, (len(payload)+1) ^ 0x54, key ^ 0x54, *[b ^ key for b in payload]]`
-  where `key` is an arbitrary random byte chosen by the sender. This is
-  not encryption — the key travels with the message, obfuscated by a
-  fixed XOR with `0x54` — but real devices and the official app expect it.
-- The unwrapped payload is `[0x68, command, ...args, checksum]`, where
-  `checksum` is the XOR of every preceding byte.
-- Per-channel brightness is sent/read as tenths of a percent (0–1000),
-  and a channel value of `0xFFFF` means "leave this channel unchanged" in
-  a set-channels command.
-- A light's model is broadcast as a 4-character ASCII hex string (e.g.
-  `"0141"` for model 321) spread across the BLE advertisement's
-  manufacturer data "company ID" field and the start of its payload -
-  the module doesn't use a real, spec-compliant company ID.
-
-See `custom_components/fluval_smart_ble/protocol.py` and `models.py` for
-the full command set and the model/channel table.
+- **[docs/PROTOCOL.md](docs/PROTOCOL.md)** - the master reference:
+  BLE transport, the wire-obfuscation layer, frame format, the full
+  command table, the multi-chunk response reassembly quirk that caused
+  this integration's early "everything shows Unavailable" bug, and how
+  a light's model is identified from its BLE advertisement.
+- **[docs/SCHEDULING.md](docs/SCHEDULING.md)** - the Auto/Pro on-device
+  schedule commands (sunrise/sunset ramps, multi-point timelines,
+  scheduled "dynamic effects" like storm/cloud/moonlight simulation).
+  Documented for future use; not implemented by this integration today.
+- **[docs/OTA.md](docs/OTA.md)** - the firmware update mechanism.
+  Reference only, and deliberately **not** implemented here - see that
+  page for why.
 
 This integration is not affiliated with or endorsed by Fluval/Hagen.
