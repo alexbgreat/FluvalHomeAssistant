@@ -114,6 +114,86 @@ def validate_pro(schedule: ProSchedule) -> str | None:
     return None
 
 
+# --- Sun sync ------------------------------------------------------------------
+
+DAY_MINUTES = 24 * 60
+# Offsets and ramp lengths are limited so a ramp always stays within a day.
+SUN_OFFSET_LIMIT = 6 * 60
+SUN_DURATION_MIN = 1
+SUN_DURATION_MAX = 4 * 60
+
+
+@dataclass
+class SunSyncConfig:
+    """Sun sync: an Auto schedule whose ramps follow the real sunrise/sunset.
+
+    Each ramp starts `offset` minutes after the sun event (negative means
+    before it) and lasts `duration` minutes. The defaults finish the sunset
+    fade right at sunset, and start the sunrise fade right at sunrise.
+    """
+
+    day: list[int]
+    night: list[int]
+    sunrise_offset: int = 0
+    sunrise_duration: int = 60
+    sunset_offset: int = -60
+    sunset_duration: int = 60
+    turnoff_enabled: bool = False
+    turnoff: TimeOfDay = TimeOfDay(0, 0)
+    # When the next day's schedule is pushed to the light each night.
+    push_time: TimeOfDay = TimeOfDay(3, 0)
+
+
+def default_sun_sync_config(auto: AutoSchedule) -> SunSyncConfig:
+    """Start from the brightness levels of an existing Auto schedule."""
+    return SunSyncConfig(
+        day=list(auto.day),
+        night=list(auto.night),
+        turnoff_enabled=auto.turnoff_enabled,
+        turnoff=auto.turnoff,
+    )
+
+
+def _clamp_minutes(value: int) -> int:
+    return max(0, min(DAY_MINUTES - 1, value))
+
+
+def _from_minutes(value: int) -> TimeOfDay:
+    return TimeOfDay(value // 60, value % 60)
+
+
+def build_sun_schedule(
+    config: SunSyncConfig, sunrise: TimeOfDay, sunset: TimeOfDay
+) -> tuple[AutoSchedule, str | None]:
+    """Build the Auto schedule for a day with the given (local) sun times.
+
+    Returns the schedule plus an error code if it can't be used: "outside_day"
+    if a ramp would run past midnight (the light's schedule is a single day;
+    the returned schedule is clipped to it), otherwise validate_auto()'s code
+    if the ramps are out of order (e.g. sunrise ending after sunset starts).
+    """
+    raw = [
+        _minutes(sunrise) + config.sunrise_offset,
+        _minutes(sunrise) + config.sunrise_offset + config.sunrise_duration,
+        _minutes(sunset) + config.sunset_offset,
+        _minutes(sunset) + config.sunset_offset + config.sunset_duration,
+    ]
+    sr_start, sr_end, ss_start, ss_end = (_clamp_minutes(m) for m in raw)
+    schedule = AutoSchedule(
+        sunrise_start=_from_minutes(sr_start),
+        sunrise_end=_from_minutes(sr_end),
+        day=list(config.day),
+        sunset_start=_from_minutes(ss_start),
+        sunset_end=_from_minutes(ss_end),
+        night=list(config.night),
+        turnoff_enabled=config.turnoff_enabled,
+        turnoff=config.turnoff,
+    )
+    if any(not 0 <= m < DAY_MINUTES for m in raw):
+        return schedule, "outside_day"
+    return schedule, validate_auto(schedule)
+
+
 # --- (de)serialization to config entry options -------------------------------
 
 
@@ -187,3 +267,43 @@ def pro_from_dict(data: Any, channel_count: int) -> ProSchedule | None:
     if any(len(p.values) != channel_count for p in points):
         return None
     return ProSchedule(points, _dynamic_from_str(data.get("dynamic")))
+
+
+def sun_sync_to_dict(config: SunSyncConfig) -> dict[str, Any]:
+    return {
+        "day": list(config.day),
+        "night": list(config.night),
+        "sunrise_offset": config.sunrise_offset,
+        "sunrise_duration": config.sunrise_duration,
+        "sunset_offset": config.sunset_offset,
+        "sunset_duration": config.sunset_duration,
+        "turnoff_enabled": config.turnoff_enabled,
+        "turnoff": format_time(config.turnoff),
+        "push_time": format_time(config.push_time),
+    }
+
+
+def sun_sync_from_dict(data: Any, channel_count: int) -> SunSyncConfig | None:
+    def offset(value: Any) -> int:
+        return max(-SUN_OFFSET_LIMIT, min(SUN_OFFSET_LIMIT, int(value)))
+
+    def duration(value: Any) -> int:
+        return max(SUN_DURATION_MIN, min(SUN_DURATION_MAX, int(value)))
+
+    try:
+        config = SunSyncConfig(
+            day=[clamp_percent(v) for v in data["day"]],
+            night=[clamp_percent(v) for v in data["night"]],
+            sunrise_offset=offset(data["sunrise_offset"]),
+            sunrise_duration=duration(data["sunrise_duration"]),
+            sunset_offset=offset(data["sunset_offset"]),
+            sunset_duration=duration(data["sunset_duration"]),
+            turnoff_enabled=bool(data.get("turnoff_enabled", False)),
+            turnoff=parse_time(data.get("turnoff", "00:00")),
+            push_time=parse_time(data.get("push_time", "03:00")),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if len(config.day) != channel_count or len(config.night) != channel_count:
+        return None
+    return config

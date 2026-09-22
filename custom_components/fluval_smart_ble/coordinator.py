@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.exc import BleakError
@@ -20,6 +21,8 @@ from .const import (
     MODE_AUTO,
     MODE_MANUAL,
     MODE_PRO,
+    MODE_SUN_SYNC,
+    MODES,
     UPDATE_INTERVAL_SECONDS,
 )
 from .models import FluvalModel
@@ -39,6 +42,9 @@ from .protocol import (
     parse_read_response,
 )
 from .schedule import AutoSchedule, ProSchedule
+
+if TYPE_CHECKING:
+    from .sun_sync import SunSync
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -86,6 +92,17 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         self._reassembler = FrameReassembler()
         self._read_waiters: list[asyncio.Future[bytes]] = []
         self._unloading = False
+        self.sun_sync: SunSync | None = None
+
+    @property
+    def effective_mode(self) -> str | None:
+        """The mode as the user sees it: the light's own, or sun sync on top of Auto."""
+        mode = self.data.mode
+        if mode is None:
+            return None
+        if mode == MODE_AUTO and self.sun_sync is not None and self.sun_sync.enabled:
+            return MODE_SUN_SYNC
+        return MODES.get(mode)
 
     async def async_setup(self) -> None:
         """Perform the first connection and start periodic polling."""

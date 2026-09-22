@@ -22,7 +22,7 @@ const CHANNEL_COLORS = {
 };
 const FALLBACK_COLORS = ["#5c6bc0", "#26a69a", "#d4e157", "#8d6e63", "#78909c"];
 
-const MODE_LABELS = { manual: "Manual", auto: "Auto", pro: "Pro" };
+const MODE_LABELS = { manual: "Manual", auto: "Auto", pro: "Pro", sun_sync: "Sun sync" };
 const SOURCE_LABELS = {
   light: "Loaded from the light.",
   saved: "The light isn't in this mode, so this is the schedule last saved from Home Assistant.",
@@ -42,6 +42,28 @@ const fromMinutes = (minutes) =>
 const channelColor = (name, index) => CHANNEL_COLORS[name] || FALLBACK_COLORS[index % FALLBACK_COLORS.length];
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
+
+// The Auto schedule sun sync would push, mirroring build_sun_schedule().
+function sunSchedule(cfg, sunrise, sunset) {
+  const clamp = (m) => Math.max(0, Math.min(DAY_MINUTES - 1, m));
+  const sr0 = clamp(toMinutes(sunrise) + Number(cfg.sunrise_offset));
+  const sr1 = clamp(sr0 + Number(cfg.sunrise_duration));
+  const ss0 = clamp(toMinutes(sunset) + Number(cfg.sunset_offset));
+  const ss1 = clamp(ss0 + Number(cfg.sunset_duration));
+  return {
+    sunrise_start: fromMinutes(sr0),
+    sunrise_end: fromMinutes(sr1),
+    sunset_start: fromMinutes(ss0),
+    sunset_end: fromMinutes(ss1),
+    day: cfg.day,
+    night: cfg.night,
+    turnoff_enabled: cfg.turnoff_enabled,
+    turnoff: cfg.turnoff,
+  };
+}
+
+const formatDateTime = (iso) =>
+  iso ? new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "never";
 
 // Brightness curves, as [minute, value] vertices per channel.
 function autoCurves(auto, channelCount) {
@@ -97,8 +119,9 @@ function chartSvg(curves, channels, markers = []) {
   const marks = markers
     .map(
       (m) =>
-        `<line class="marker" x1="${x(m.at)}" x2="${x(m.at)}" y1="${y(100)}" y2="${y(0)}"/>` +
-        `<text class="axis" x="${x(m.at) + 4}" y="${y(100) + 12}">${escapeHtml(m.label)}</text>`
+        `<line class="marker ${m.cls || ""}" x1="${x(m.at)}" x2="${x(m.at)}" y1="${y(100)}" y2="${y(0)}"/>` +
+        // Sun markers are labelled at the bottom, clear of the daytime curves.
+        `<text class="axis" x="${x(m.at) + 4}" y="${m.cls === "sun" ? y(0) - 6 : y(100) + 12}">${escapeHtml(m.label)}</text>`
     )
     .join("");
   const lines = curves
@@ -165,13 +188,14 @@ const STYLE = `
   .segmented button + button { border-left: 1px solid var(--divider-color); }
   .segmented button.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
   .segmented button:disabled { cursor: default; opacity: 0.6; }
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--divider-color); margin: 0 0 16px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--divider-color); margin: 0 0 16px; overflow-x: auto; }
   .tabs button {
     background: none; border: none; border-bottom: 2px solid transparent;
     padding: 10px 16px; cursor: pointer; font: inherit; font-size: 15px;
-    color: var(--secondary-text-color);
+    color: var(--secondary-text-color); white-space: nowrap;
   }
   .tabs button.active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
+  @media (max-width: 480px) { .tabs button { padding: 10px 10px; font-size: 14px; } }
   select, input[type="time"], input[type="number"] {
     font: inherit; font-size: 14px; padding: 6px 8px;
     border: 1px solid var(--divider-color); border-radius: 6px;
@@ -190,6 +214,7 @@ const STYLE = `
   .chart svg { width: 100%; height: auto; display: block; }
   .chart .grid { stroke: var(--divider-color); stroke-width: 1; }
   .chart .marker { stroke: var(--error-color, #db4437); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  .chart .marker.sun { stroke: var(--warning-color, #f9a825); }
   .chart .axis { fill: var(--secondary-text-color); font-size: 11px; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 13px; }
   .legend-item { display: inline-flex; align-items: center; gap: 6px; }
@@ -218,6 +243,13 @@ const STYLE = `
   .message.error { background: rgba(219, 68, 55, 0.12); color: var(--error-color, #db4437); }
   .message.success { background: rgba(67, 160, 71, 0.14); color: var(--success-color, #43a047); }
   .note { font-size: 13px; color: var(--secondary-text-color); margin-top: 8px; }
+  .status { display: flex; flex-wrap: wrap; gap: 4px 24px; padding: 12px 14px; border-radius: 8px;
+    background: var(--secondary-background-color, rgba(127,127,127,0.08)); font-size: 14px; margin-bottom: 12px; }
+  .status strong { font-weight: 500; }
+  .status .on { color: var(--success-color, #43a047); }
+  .status .err { color: var(--error-color, #db4437); flex-basis: 100%; }
+  .fade-times { font-size: 13px; color: var(--secondary-text-color); margin-top: 6px; }
+  input.offset { width: 80px; }
 `;
 
 class FluvalSchedulePanel extends HTMLElement {
@@ -283,6 +315,7 @@ class FluvalSchedulePanel extends HTMLElement {
       this._drafts[light.entry_id] = {
         auto: clone(light.auto),
         pro: clone(light.pro),
+        sun: light.sun_sync ? clone(light.sun_sync.config) : null,
         activateAuto: true,
         activatePro: true,
       };
@@ -326,6 +359,13 @@ class FluvalSchedulePanel extends HTMLElement {
     );
   }
 
+  _saveSunSync() {
+    this._call(
+      { type: `${DOMAIN}/set_sun_sync`, entry_id: this._selected, config: this._draft().sun },
+      "Sun sync is on. Today's schedule has been pushed to the light, and it will be updated every night."
+    );
+  }
+
   _setMode(mode) {
     this._call({ type: `${DOMAIN}/set_mode`, entry_id: this._selected, mode }, `Switched to ${MODE_LABELS[mode]} mode.`);
   }
@@ -361,7 +401,9 @@ class FluvalSchedulePanel extends HTMLElement {
     let value;
     if (target.type === "checkbox") value = target.checked;
     else if (target.type === "range" || target.type === "number") {
-      value = Math.max(0, Math.min(100, Math.round(Number(target.value) || 0)));
+      const min = target.min === "" ? -Infinity : Number(target.min);
+      const max = target.max === "" ? Infinity : Number(target.max);
+      value = Math.max(min, Math.min(max, Math.round(Number(target.value) || 0)));
     } else value = target.value;
     let obj = this._draft();
     for (const key of path.slice(0, -1)) obj = obj[key];
@@ -399,6 +441,13 @@ class FluvalSchedulePanel extends HTMLElement {
         this._renderContent();
       } else if (ev.target.dataset.path) {
         this._applyInput(ev.target);
+        // Show the clamped value once the user is done typing.
+        if (ev.target.type === "number") {
+          const path = ev.target.dataset.path.split(".");
+          let obj = this._draft();
+          for (const key of path) obj = obj[key];
+          ev.target.value = obj;
+        }
         this._renderChart();
       }
     });
@@ -416,6 +465,8 @@ class FluvalSchedulePanel extends HTMLElement {
     } else if (action === "mode") this._setMode(el.dataset.mode);
     else if (action === "save-auto") this._saveAuto();
     else if (action === "save-pro") this._savePro();
+    else if (action === "save-sun") this._saveSunSync();
+    else if (action === "sun-off") this._setMode("auto");
     else if (action === "reset") {
       delete this._drafts[this._selected];
       this._message = null;
@@ -450,8 +501,9 @@ class FluvalSchedulePanel extends HTMLElement {
         <div class="tabs">
           <button data-action="tab" data-tab="auto" class="${this._tab === "auto" ? "active" : ""}">Auto schedule</button>
           <button data-action="tab" data-tab="pro" class="${this._tab === "pro" ? "active" : ""}">Pro schedule</button>
+          <button data-action="tab" data-tab="sun" class="${this._tab === "sun" ? "active" : ""}">Sun sync</button>
         </div>
-        ${this._tab === "auto" ? this._renderAuto(light) : this._renderPro(light)}
+        ${this._tab === "auto" ? this._renderAuto(light) : this._tab === "pro" ? this._renderPro(light) : this._renderSun(light)}
       </div>`;
     }
     this._content.innerHTML = html;
@@ -570,6 +622,60 @@ class FluvalSchedulePanel extends HTMLElement {
       </div>`;
   }
 
+  _renderSun(light) {
+    const draft = this._draft();
+    const s = draft.sun;
+    const info = light.sun_sync;
+    const disabled = this._busy ? "disabled" : "";
+    const status = info.enabled
+      ? `<span><strong class="on">Sun sync is on</strong></span>
+         <span>Last pushed: ${escapeHtml(formatDateTime(info.last_push))}</span>
+         <span>Next push: ${escapeHtml(formatDateTime(info.next_push))}</span>`
+      : `<span><strong>Sun sync is off</strong></span>`;
+    const error = info.last_error ? `<span class="err">${escapeHtml(info.last_error)}</span>` : "";
+    const sunLine = info.sunrise
+      ? `On ${escapeHtml(new Date(info.date + "T12:00").toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }))} the sun rises at <strong>${info.sunrise}</strong> and sets at <strong>${info.sunset}</strong> at your Home Assistant location.`
+      : `The sun doesn't both rise and set on ${escapeHtml(info.date)} at your Home Assistant location, so there's nothing to follow.`;
+    const offsetField = (label, path, value, min, max) =>
+      `<label class="field">${label}<span class="row" style="gap:6px"><input class="offset" type="number" min="${min}" max="${max}" step="1" value="${value}" data-path="${path}"> min</span></label>`;
+    return `
+      <div class="status">${status}${error}</div>
+      <p class="muted">Home Assistant works out each day's sunrise and sunset, applies your offsets, and pushes the result to the light as its Auto schedule every night. ${sunLine}</p>
+      <div class="chart" data-chart></div>
+      <div class="fade-times" data-fade-times></div>
+      <h3>Sunrise fade</h3>
+      <div class="grid2">
+        ${offsetField("Starts, relative to sunrise", "sun.sunrise_offset", s.sunrise_offset, -360, 360)}
+        ${offsetField("Lasts", "sun.sunrise_duration", s.sunrise_duration, 1, 240)}
+      </div>
+      <h3>Sunset fade</h3>
+      <div class="grid2">
+        ${offsetField("Starts, relative to sunset", "sun.sunset_offset", s.sunset_offset, -360, 360)}
+        ${offsetField("Lasts", "sun.sunset_duration", s.sunset_duration, 1, 240)}
+      </div>
+      <p class="note">Negative offsets start the fade before the sun event: e.g. a sunset fade starting −60 min and lasting 60 min ends exactly at sunset.</p>
+      <h3>Day brightness</h3>
+      ${this._sliders("sun.day", s.day, light.channels)}
+      <h3>Night brightness</h3>
+      ${this._sliders("sun.night", s.night, light.channels)}
+      <h3>Daily turn-off</h3>
+      <div class="row">
+        <label class="check"><input type="checkbox" data-path="sun.turnoff_enabled" ${s.turnoff_enabled ? "checked" : ""}>Turn the light off at</label>
+        <input type="time" value="${s.turnoff}" data-path="sun.turnoff" aria-label="Turn-off time">
+      </div>
+      <h3>Nightly update</h3>
+      <div class="row">
+        <label class="field">Push the new day's schedule to the light at<input type="time" value="${s.push_time}" data-path="sun.push_time" required></label>
+      </div>
+      <p class="note">Pick a time the light is reachable and between sunset and sunrise. If the light can't be reached, Home Assistant retries every 10 minutes for 3 hours.</p>
+      <div class="actions">
+        <span class="spacer"></span>
+        ${info.enabled ? `<button class="secondary" data-action="sun-off" ${disabled} title="Keeps the light in Auto mode with the last pushed schedule">Turn off sun sync</button>` : ""}
+        <button class="secondary" data-action="reset" ${disabled}>Reset</button>
+        <button class="primary" data-action="save-sun" ${disabled || (info.sunrise ? "" : "disabled")}>${this._busy ? "Saving…" : info.enabled ? "Save & push now" : "Turn on & push now"}</button>
+      </div>`;
+  }
+
   _renderChart() {
     const container = this.shadowRoot.querySelector("[data-chart]");
     const light = this._light();
@@ -582,6 +688,20 @@ class FluvalSchedulePanel extends HTMLElement {
       const a = draft.auto;
       curves = autoCurves(a, channels.length);
       if (a.turnoff_enabled && a.turnoff) markers = [{ at: toMinutes(a.turnoff), label: "Off" }];
+    } else if (this._tab === "sun") {
+      const info = light.sun_sync;
+      if (!info || !info.sunrise) return;
+      const a = sunSchedule(draft.sun, info.sunrise, info.sunset);
+      curves = autoCurves(a, channels.length);
+      markers = [
+        { at: toMinutes(info.sunrise), label: "Sunrise", cls: "sun" },
+        { at: toMinutes(info.sunset), label: "Sunset", cls: "sun" },
+      ];
+      if (a.turnoff_enabled && a.turnoff) markers.push({ at: toMinutes(a.turnoff), label: "Off" });
+      const fades = this.shadowRoot.querySelector("[data-fade-times]");
+      if (fades) {
+        fades.textContent = `Sunrise fade ${a.sunrise_start}–${a.sunrise_end} · Sunset fade ${a.sunset_start}–${a.sunset_end}`;
+      }
     } else {
       curves = proCurves(draft.pro.points, channels.length);
     }

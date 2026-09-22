@@ -4,11 +4,13 @@ from __future__ import annotations
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MODES, MODES_REVERSE
+from .const import DOMAIN, MODE_OPTIONS
 from .coordinator import FluvalCoordinator
 from .entity import FluvalEntity
+from .sun_sync import SunSyncError, async_select_mode
 
 
 async def async_setup_entry(
@@ -20,11 +22,15 @@ async def async_setup_entry(
 
 
 class FluvalModeSelect(FluvalEntity, SelectEntity):
-    """Switch the light between its manual, auto (sunrise/sunset) and pro schedules."""
+    """Switch the light between manual, auto (sunrise/sunset), pro and sun sync.
+
+    Sun sync is Home Assistant's own mode: the light runs in auto, with its
+    schedule rewritten nightly to follow the real sunrise and sunset.
+    """
 
     _attr_name = "Mode"
     _attr_icon = "mdi:tune"
-    _attr_options = list(MODES.values())
+    _attr_options = MODE_OPTIONS
 
     def __init__(self, coordinator: FluvalCoordinator) -> None:
         super().__init__(coordinator)
@@ -32,8 +38,10 @@ class FluvalModeSelect(FluvalEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        mode = self.coordinator.data.mode
-        return MODES.get(mode) if mode is not None else None
+        return self.coordinator.effective_mode
 
     async def async_select_option(self, option: str) -> None:
-        await self.coordinator.async_set_mode(MODES_REVERSE[option])
+        try:
+            await async_select_mode(self.coordinator, option)
+        except SunSyncError as err:
+            raise HomeAssistantError(str(err)) from err

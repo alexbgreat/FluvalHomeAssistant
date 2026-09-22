@@ -11,7 +11,7 @@ from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 
-from .const import DOMAIN, MODES, MODES_REVERSE
+from .const import DOMAIN, MODE_OPTIONS
 from .coordinator import FluvalCoordinator
 from .schedule import (
     AutoSchedule,
@@ -22,9 +22,11 @@ from .schedule import (
     default_pro_schedule,
     pro_from_dict,
     pro_to_dict,
+    sun_sync_from_dict,
     validate_auto,
     validate_pro,
 )
+from .sun_sync import SunSyncError, async_select_mode
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ def async_register_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_set_auto)
     websocket_api.async_register_command(hass, ws_set_pro)
     websocket_api.async_register_command(hass, ws_set_mode)
+    websocket_api.async_register_command(hass, ws_set_sun_sync)
 
 
 def _coordinator(hass: HomeAssistant, entry: ConfigEntry) -> FluvalCoordinator | None:
@@ -85,18 +88,18 @@ def _describe(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     # The dynamic-effect block is carried through server-side on save; the
     # panel only needs to know whether one exists.
     auto_dict.pop("dynamic"), pro_dict.pop("dynamic")
-    mode = coordinator.data.mode
     info.update(
         address=coordinator.address,
         model=coordinator.model.name,
         channels=list(coordinator.model.channels),
-        mode=MODES.get(mode) if mode is not None else None,
+        mode=coordinator.effective_mode,
         auto=auto_dict,
         auto_source=auto_source,
         auto_dynamic=auto.dynamic is not None,
         pro=pro_dict,
         pro_source=pro_source,
         pro_dynamic=pro.dynamic is not None,
+        sun_sync=coordinator.sun_sync.describe(auto) if coordinator.sun_sync is not None else None,
     )
     return info
 
@@ -174,6 +177,9 @@ async def ws_set_auto(hass: HomeAssistant, connection: websocket_api.ActiveConne
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, OPT_AUTO_SCHEDULE: auto_to_dict(schedule)}
     )
+    # A hand-made Auto schedule would be overwritten by the next nightly push.
+    if coordinator.sun_sync is not None:
+        coordinator.sun_sync.async_disable()
     connection.send_result(msg["id"], _describe(hass, entry))
 
 
@@ -209,6 +215,8 @@ async def ws_set_pro(hass: HomeAssistant, connection: websocket_api.ActiveConnec
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, OPT_PRO_SCHEDULE: pro_to_dict(schedule)}
     )
+    if msg["activate"] and coordinator.sun_sync is not None:
+        coordinator.sun_sync.async_disable()
     connection.send_result(msg["id"], _describe(hass, entry))
 
 
@@ -216,19 +224,59 @@ async def ws_set_pro(hass: HomeAssistant, connection: websocket_api.ActiveConnec
     {
         vol.Required("type"): f"{DOMAIN}/set_mode",
         vol.Required("entry_id"): str,
-        vol.Required("mode"): vol.In(list(MODES_REVERSE)),
+        vol.Required("mode"): vol.In(MODE_OPTIONS),
     }
 )
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_set_mode(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """Switch the light between Manual, Auto and Pro."""
+    """Switch the light between Manual, Auto, Pro and Sun sync."""
     if (found := _lookup(hass, connection, msg)) is None:
         return
     entry, coordinator = found
     try:
-        await coordinator.async_set_mode(MODES_REVERSE[msg["mode"]])
+        await async_select_mode(coordinator, msg["mode"])
+    except SunSyncError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
     except (BleakError, TimeoutError) as err:
         _send_bluetooth_error(connection, msg, coordinator, err)
+        return
+    connection.send_result(msg["id"], _describe(hass, entry))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/set_sun_sync",
+        vol.Required("entry_id"): str,
+        vol.Required("config"): dict,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set_sun_sync(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Save sun sync settings, turn it on, and push the resulting schedule now."""
+    if (found := _lookup(hass, connection, msg)) is None:
+        return
+    entry, coordinator = found
+    config = sun_sync_from_dict(msg["config"], len(coordinator.model.channels))
+    if config is None or coordinator.sun_sync is None:
+        _send_invalid(connection, msg, "invalid_format")
+        return
+    try:
+        await coordinator.sun_sync.async_enable(config)
+    except SunSyncError as err:
+        connection.send_error(msg["id"], err.code, str(err))
+        return
+    except (BleakError, TimeoutError) as err:
+        _LOGGER.warning("Could not send to Fluval light %s: %s", coordinator.address, err)
+        connection.send_error(
+            msg["id"],
+            "cannot_connect",
+            "Sun sync is on, but the light couldn't be reached to push today's schedule. "
+            "It will keep retrying in the background.",
+        )
         return
     connection.send_result(msg["id"], _describe(hass, entry))
