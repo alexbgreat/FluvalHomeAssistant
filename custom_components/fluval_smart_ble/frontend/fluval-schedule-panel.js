@@ -134,7 +134,7 @@ function chartSvg(curves, channels, markers = [], bands = []) {
       (m) =>
         `<line class="marker ${m.cls || ""}" x1="${x(m.at)}" x2="${x(m.at)}" y1="${y(100)}" y2="${y(0)}"/>` +
         // Sun markers are labelled at the bottom, clear of the daytime curves.
-        `<text class="axis" x="${x(m.at) + 4}" y="${m.cls === "sun" ? y(0) - 6 : y(100) + 12}">${escapeHtml(m.label)}</text>`
+        `<text class="axis ${m.cls === "now" ? "now-label" : ""}" x="${x(m.at) + 4}" y="${m.cls === "sun" ? y(0) - 6 : m.cls === "now" ? y(100) + 36 : y(100) + 12}">${escapeHtml(m.label)}</text>`
     )
     .join("");
   const lines = curves
@@ -228,6 +228,8 @@ const STYLE = `
   .chart .grid { stroke: var(--divider-color); stroke-width: 1; }
   .chart .marker { stroke: var(--error-color, #db4437); stroke-width: 1.5; stroke-dasharray: 4 3; }
   .chart .marker.sun { stroke: var(--warning-color, #f9a825); }
+  .chart .marker.now { stroke: var(--primary-text-color, #212121); stroke-width: 1.5; stroke-dasharray: none; opacity: 0.7; }
+  .chart .now-label { fill: var(--primary-text-color, #212121); font-weight: 500; }
   .chart .band { fill: var(--primary-color); opacity: 0.1; }
   .chart .band-label { fill: var(--primary-color); }
   .days { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -907,6 +909,33 @@ class FluvalSchedulePanel extends HTMLElement {
       </div>`;
   }
 
+  // The current time of day in Home Assistant's time zone, which is the
+  // clock the light is synced to (the browser's may differ).
+  _nowMarker() {
+    const zone = this._hass && this._hass.config && this._hass.config.time_zone;
+    let hour, minute;
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: zone || undefined, hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+        .formatToParts(new Date());
+      hour = Number(parts.find((p) => p.type === "hour").value);
+      minute = Number(parts.find((p) => p.type === "minute").value);
+    } catch (err) {
+      const now = new Date();
+      hour = now.getHours();
+      minute = now.getMinutes();
+    }
+    return { at: hour * 60 + minute, label: "Now", cls: "now" };
+  }
+
+  connectedCallback() {
+    // Keep the "Now" line moving.
+    this._clock = setInterval(() => this._renderChart(), 60 * 1000);
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._clock);
+  }
+
   _renderChart() {
     const container = this.shadowRoot.querySelector("[data-chart]");
     const light = this._light();
@@ -945,7 +974,7 @@ class FluvalSchedulePanel extends HTMLElement {
     }
     // A cleared or half-typed time can't be plotted; keep the last chart.
     if (curves.flat(2).some(Number.isNaN) || markers.some((m) => Number.isNaN(m.at))) return;
-    container.innerHTML = chartSvg(curves, channels, markers, bands);
+    container.innerHTML = chartSvg(curves, channels, [...markers, this._nowMarker()], bands);
   }
 
   // The sun-synced day with the effects weather sync would play right now
@@ -969,7 +998,7 @@ class FluvalSchedulePanel extends HTMLElement {
     const dayEnd = toMinutes(a.sunset_end);
     if (weather !== null && weather !== undefined) bands.push({ start: dayStart, end: dayEnd, label: this._effectName(weather) });
     if (night !== null && night !== undefined) bands.push({ start: dayEnd, end: dayStart, label: this._effectName(night) });
-    container.innerHTML = chartSvg(curves, light.channels, markers, bands);
+    container.innerHTML = chartSvg(curves, light.channels, [...markers, this._nowMarker()], bands);
   }
 }
 
