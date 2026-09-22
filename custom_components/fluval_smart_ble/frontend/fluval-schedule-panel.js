@@ -437,8 +437,17 @@ class FluvalSchedulePanel extends HTMLElement {
     this._message = null;
     this._renderContent();
     try {
-      await this._hass.callWS({ type: `${DOMAIN}/play_effect`, entry_id: this._selected, effect: id });
-      this._message = { type: "success", text: `Asked the light to play ${name}.` };
+      const result = await this._hass.callWS({ type: `${DOMAIN}/play_effect`, entry_id: this._selected, effect: id });
+      if (result && result.light) this._replaceLight(result.light);
+      const previous = result && result.previous_mode;
+      const switched = previous && previous !== "manual";
+      this._message = {
+        type: "success",
+        text: switched
+          ? `Playing ${name}. The light only plays effects in Manual mode, so it was switched to Manual.`
+          : `Playing ${name}.`,
+        returnMode: switched && MODE_LABELS[previous] ? previous : null,
+      };
     } catch (err) {
       this._message = { type: "error", text: err.message || String(err) };
     }
@@ -587,7 +596,10 @@ class FluvalSchedulePanel extends HTMLElement {
     const light = this._light();
     let html = "";
     if (this._message) {
-      html += `<div class="message ${this._message.type}">${escapeHtml(this._message.text)}</div>`;
+      const back = this._message.returnMode
+        ? ` <button class="secondary small" data-action="mode" data-mode="${this._message.returnMode}" ${this._busy ? "disabled" : ""}>Back to ${MODE_LABELS[this._message.returnMode]}</button>`
+        : "";
+      html += `<div class="message ${this._message.type}">${escapeHtml(this._message.text)}${back}</div>`;
     }
     html += this._renderHeaderCard(light);
     if (!light.loaded) {
@@ -674,11 +686,11 @@ class FluvalSchedulePanel extends HTMLElement {
           <label class="field">From<input type="time" value="${effect.start}" data-path="${path}.start" required></label>
           <label class="field">Until<input type="time" value="${effect.end}" data-path="${path}.end" required></label>
           <button class="secondary" data-action="preview-effect" data-path="${path}" ${this._busy || !known ? "disabled" : ""}
-            title="Experimental: asks the light to play this effect now">Preview on light</button>
+            title="Plays this effect on the light now (switches it to Manual mode)">Preview on light</button>
         </div>
         <div class="days" role="group" aria-label="Days">${days}</div>
       </div>
-      <p class="note">The light plays the effect over its schedule between these times on the chosen days; a window can run past midnight. Preview is experimental: the effect command's behaviour hasn't been confirmed on real hardware.</p>`;
+      <p class="note">The light plays the effect over its schedule between these times on the chosen days; a window can run past midnight. Preview switches the light to Manual mode, the only mode it plays effects on demand in; you can switch back afterwards.</p>`;
   }
 
   _renderAuto(light) {
@@ -824,7 +836,7 @@ class FluvalSchedulePanel extends HTMLElement {
     const preview =
       value === null
         ? ""
-        : `<button class="secondary small" data-action="play-effect" data-effect="${value}" ${this._busy ? "disabled" : ""} title="Experimental: asks the light to play this effect now">Preview</button>`;
+        : `<button class="secondary small" data-action="play-effect" data-effect="${value}" ${this._busy ? "disabled" : ""} title="Plays this effect on the light now (switches it to Manual mode)">Preview</button>`;
     return `<select data-path="${path}" data-type="effect" data-rerender-weather aria-label="${escapeHtml(label)}">${options}</select>${preview}`;
   }
 

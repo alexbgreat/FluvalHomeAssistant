@@ -161,11 +161,11 @@ Fixed 6-byte args, no variants.
 ## `CMD_DYN` (`0x0A`) - trigger/select a dynamic effect
 
 Builder: `CommUtil.sendKey(address, mode)` - 1 byte, the effect ID.
-**Its exact runtime behavior (does it play the effect immediately as a
-live preview, or does it just set which effect the dynamic-schedule
-windows above will play?) was not confirmed** - inferred only from the
-name `sendKey` and from the icon/id mapping in
-`DeviceUtil.getDynamicRes()`:
+**Confirmed on a real Aquasky: it plays the effect immediately, but only
+while the light is in Manual mode** - in Auto/Pro it is silently
+ignored, so the integration switches to Manual (`CMD_MODE 0`) before
+sending it. How to stop an effect other than by changing mode is still
+unknown. The ID mapping is from `DeviceUtil.getDynamicRes()`:
 
 | ID | Effect |
 |---|---|
