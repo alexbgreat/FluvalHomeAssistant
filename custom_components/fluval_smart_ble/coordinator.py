@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -100,6 +101,9 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         self._reassembler = FrameReassembler()
         self._read_waiters: list[asyncio.Future[bytes]] = []
         self._unloading = False
+        # For diagnostics: the last CMD_READ response and the frames sent.
+        self.last_read_frame: bytes | None = None
+        self.recent_writes: deque[tuple[str, str]] = deque(maxlen=30)
         self._time_synced_at: datetime | None = None
         self._time_synced_offset: timedelta | None = None
         self.sun_sync: SunSync | None = None
@@ -157,6 +161,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             ) from err
 
         _LOGGER.debug("Fluval light %s read response: %s", self.address, frame.hex())
+        self.last_read_frame = frame
         parsed = parse_read_response(frame, len(self.model.channels))
         if parsed is None:
             raise UpdateFailed(
@@ -278,6 +283,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         if client is None or not client.is_connected:
             raise BleakError("not connected")
         wire = encode_message(frame)
+        self.recent_writes.append((dt_util.now().isoformat(), frame.hex()))
         _LOGGER.debug(
             "Fluval light %s writing frame=%s wire=%s (response=%s)",
             self.address,

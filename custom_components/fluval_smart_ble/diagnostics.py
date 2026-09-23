@@ -10,6 +10,13 @@ from homeassistant.core import HomeAssistant
 
 from .const import CONF_MODEL_ID, DOMAIN
 from .coordinator import FluvalCoordinator
+from .schedule import (
+    auto_to_dict,
+    decode_effect,
+    effect_to_dict,
+    is_weather_effect,
+    pro_to_dict,
+)
 
 
 async def async_get_config_entry_diagnostics(
@@ -18,9 +25,12 @@ async def async_get_config_entry_diagnostics(
     """Return diagnostics for a config entry.
 
     Includes the light's raw BLE advertisement (service/manufacturer data)
-    so model-detection issues can be diagnosed without a physical device.
+    so model-detection issues can be diagnosed without a physical device,
+    and its schedules, effects, sun/weather sync settings and recent frames
+    so schedule issues can be too.
     """
     coordinator: FluvalCoordinator = hass.data[DOMAIN][entry.entry_id]
+    auto, pro = coordinator.data.auto_schedule, coordinator.data.pro_schedule
     address = entry.data[CONF_ADDRESS]
 
     service_info = bluetooth.async_last_service_info(hass, address, connectable=True)
@@ -55,6 +65,18 @@ async def async_get_config_entry_diagnostics(
             "mode": coordinator.data.mode,
             "channel_values": coordinator.data.channel_values,
             "last_update_success": coordinator.last_update_success,
+            "effective_mode": coordinator.effective_mode,
+            "last_read_frame": coordinator.last_read_frame.hex() if coordinator.last_read_frame else None,
         },
+        "auto_schedule": auto_to_dict(auto) if auto is not None else None,
+        "auto_effect": effect_to_dict(decode_effect(auto.dynamic)) if auto is not None else None,
+        "auto_effect_is_weather": is_weather_effect(auto) if auto is not None else None,
+        "pro_schedule": pro_to_dict(pro) if pro is not None else None,
+        "options": dict(entry.options),
+        "sun_sync": (
+            coordinator.sun_sync.describe(auto) if coordinator.sun_sync is not None and auto is not None else None
+        ),
+        "weather_sync": coordinator.weather_sync.describe() if coordinator.weather_sync is not None else None,
+        "recent_writes": [{"at": at, "frame": frame} for at, frame in coordinator.recent_writes],
         "current_advertisement": advertisement,
     }

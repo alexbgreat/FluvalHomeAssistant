@@ -10,8 +10,9 @@ responses are decoded on a best-effort basis to prefill that editor
 always sends Auto's turn-off block (disabled via its enable byte when
 unused) so the variant is unambiguous. The dynamic-effect trailer is
 decoded and edited as a `DynamicEffect` (`schedule.py`): once edited in
-the panel it is always sent (switched off via the `week` byte's `0x80`
-bit rather than omitted), and a schedule saved without edits re-sends
+the panel it is always sent (switched off with a `week` byte of `0x00`
+- neither the `0x80` bit nor any day, since the light obeying `0x80` alone
+is unconfirmed - rather than omitted), and a schedule saved without edits re-sends
 the one read back from the light unchanged. `CMD_DYN` backs the panel's
 experimental "Preview on light" button. The
 integration's Sun sync mode (`sun_sync.py`) reuses `CMD_CYCLE`: it
