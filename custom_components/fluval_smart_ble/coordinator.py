@@ -56,6 +56,7 @@ _LOGGER = logging.getLogger(__name__)
 CONNECT_TIMEOUT = 15
 CONNECT_SETTLE_DELAY = 0.7
 READ_RESPONSE_TIMEOUT = 5
+# Plaintext bytes per write; each is wrapped separately (3 header bytes).
 MAX_WRITE_CHUNK = 17
 CHUNK_DELAY = 0.008
 # Pause between programming a schedule and switching into its mode, so a
@@ -282,22 +283,26 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         client = self._client
         if client is None or not client.is_connected:
             raise BleakError("not connected")
-        wire = encode_message(frame)
         self.recent_writes.append((dt_util.now().isoformat(), frame.hex()))
+        # Like the app's BleManager.sendBytes(): the plaintext frame is split
+        # into <=17-byte pieces and each is wrapped on its own (its own
+        # header and key) - not wrapped once and the wire bytes split, which
+        # the light can't decode past the first piece and drops entirely.
+        pieces = [frame[i : i + MAX_WRITE_CHUNK] for i in range(0, len(frame), MAX_WRITE_CHUNK)]
+        wires = [encode_message(piece) for piece in pieces]
         _LOGGER.debug(
             "Fluval light %s writing frame=%s wire=%s (response=%s)",
             self.address,
             frame.hex(),
-            wire.hex(),
+            " ".join(wire.hex() for wire in wires),
             self._write_with_response,
         )
-        for offset in range(0, len(wire), MAX_WRITE_CHUNK):
-            chunk = wire[offset : offset + MAX_WRITE_CHUNK]
-            await client.write_gatt_char(
-                CHAR_WRITE_UUID, chunk, response=self._write_with_response
-            )
-            if offset + MAX_WRITE_CHUNK < len(wire):
+        for index, wire in enumerate(wires):
+            if index:
                 await asyncio.sleep(CHUNK_DELAY)
+            await client.write_gatt_char(
+                CHAR_WRITE_UUID, wire, response=self._write_with_response
+            )
 
     async def _async_send_and_wait(self, frame: bytes, timeout: float = READ_RESPONSE_TIMEOUT) -> bytes:
         loop = asyncio.get_running_loop()
