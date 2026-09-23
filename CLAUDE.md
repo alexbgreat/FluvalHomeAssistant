@@ -32,6 +32,11 @@
   like diagnostics are imported on first use, so they can be newer than the
   running coordinator - read new coordinator attributes with getattr there.
   When a fix "doesn't work", first check the owner restarted.
+- Writes longer than 17 plaintext bytes (Auto/Pro schedules) must be split
+  *before* wrapping, each piece wrapped on its own (PROTOCOL.md §1/§4). Until
+  0.5.8 the wire was split instead, so the light silently dropped every
+  schedule while short commands worked. When the light "ignores" something,
+  compare diagnostics' `last_read_frame` with `recent_writes` first.
 - Support both older (2024.x) and current Home Assistant cores; there's no
   test suite in the repo yet, so validate against real HA cores
   (`pytest-homeassistant-custom-component`) in a scratch venv.
