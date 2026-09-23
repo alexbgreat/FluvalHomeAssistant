@@ -53,9 +53,12 @@ class DynamicEffect:
     end: TimeOfDay
 
     def to_bytes(self) -> bytes:
-        week = sum(1 << i for i, on in enumerate(self.days) if on)
+        # Switched off, no days are sent either: the 0x80 bit comes from the
+        # app's code and isn't confirmed to be obeyed on its own, while an
+        # effect with no days can't play whatever the light makes of it.
+        week = 0
         if self.enabled:
-            week |= _EFFECT_ENABLED_BIT
+            week = _EFFECT_ENABLED_BIT | sum(1 << i for i, on in enumerate(self.days) if on)
         return bytes(
             [week, self.start.hour, self.start.minute, self.end.hour, self.end.minute, self.effect & 0xFF]
         )
@@ -67,10 +70,14 @@ class DynamicEffect:
         week, sh, sm, eh, em, effect = raw
         if sh > 23 or sm > 59 or eh > 23 or em > 59:
             return None
+        enabled = bool(week & _EFFECT_ENABLED_BIT)
+        days = [bool(week & (1 << i)) for i in range(7)]
         return cls(
-            enabled=bool(week & _EFFECT_ENABLED_BIT),
+            enabled=enabled,
             effect=effect,
-            days=[bool(week & (1 << i)) for i in range(7)],
+            # Switched off, the days aren't sent; switching it back on in the
+            # panel starts from every day.
+            days=days if enabled or any(days) else [True] * 7,
             start=TimeOfDay(sh, sm),
             end=TimeOfDay(eh, em),
         )
