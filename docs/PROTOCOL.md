@@ -38,12 +38,15 @@ and `const.py`.
   characteristic advertises it, falling back to `write` (with response)
   otherwise. This integration does the same
   (`coordinator.py:_async_ensure_connected`).
-- **Chunking**: a logical message longer than 17 bytes is split into
-  ≤17-byte pieces before being wrapped (see §2) and sent as separate
-  writes/notifications, with an ~8ms gap between write chunks. 17 was
-  chosen to fit comfortably under the smallest negotiated ATT MTU (23
-  bytes: 20 usable payload bytes, minus the 3-byte wire header from
-  §2 = 17 payload bytes per chunk).
+- **Chunking**: a logical message too long for one write is split into
+  pieces before being wrapped (see §2) - each piece wrapped on its own -
+  and sent as separate writes/notifications, with an ~8ms gap between
+  write chunks. The light's own notifications carry up to 17 plaintext
+  bytes per piece (20 on the wire, the smallest ATT MTU's payload); this
+  integration writes 15-byte pieces, as the FluvalConnect app's encoder
+  does (per [nphil/fluvalble](https://github.com/nphil/fluvalble)'s
+  `encryption.py`). Until 0.5.8 the wire was split instead of the
+  plaintext, and the light silently dropped every long write.
 - **Connection settle time**: the app waits 300ms after GATT service
   discovery before enabling notifications, then a further 400ms before
   it will send anything. Empirically (see the git history of this
@@ -182,7 +185,7 @@ light) or `←` (light to app/HA, i.e. a notification).
 | `0x0E` | `CMD_SYNCTIME` | → | 7 bytes: year-2000, month(0-based), day, weekday(0=Sun..6=Sat), hour, minute, second | **Implemented** (auto-sync on connect, hourly and on UTC-offset changes, + "Sync Time" button) |
 | `0x0F` | `CMD_FIND` | → | no args | Implemented ("Find" button) |
 | `0x10` | `CMD_PRO` | → | Pro-mode schedule, see SCHEDULING.md | Implemented (sidebar schedule editor) |
-| `0x11` | `CMD_DYNAMIC_PERIOD` | → | 6 bytes: week bitmask, RampTime×4, mode | Reference only, see SCHEDULING.md |
+| `0x11` | `CMD_DYNAMIC_PERIOD` | → | 6 bytes per effect window: week bitmask, RampTime×4, mode | Implemented (sets the timed effect after every Auto/Pro schedule write), see SCHEDULING.md |
 
 Only `CMD_READ` is known to produce a notification in reply; the app's
 own send path (`sendBytes`) never blocks waiting for one, so most

@@ -38,6 +38,7 @@ from .protocol import (
     frame_read,
     frame_set_auto,
     frame_set_channels,
+    frame_set_effect,
     frame_set_mode,
     frame_set_pro,
     frame_sync_time,
@@ -57,7 +58,9 @@ CONNECT_TIMEOUT = 15
 CONNECT_SETTLE_DELAY = 0.7
 READ_RESPONSE_TIMEOUT = 5
 # Plaintext bytes per write; each is wrapped separately (3 header bytes).
-MAX_WRITE_CHUNK = 17
+# 15 as in the FluvalConnect app's encoder, though the light's own replies
+# come in 17-byte pieces.
+MAX_WRITE_CHUNK = 15
 CHUNK_DELAY = 0.008
 # Pause between programming a schedule and switching into its mode, so a
 # long multi-chunk schedule frame is processed before the mode change.
@@ -105,6 +108,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         # For diagnostics: the last CMD_READ response and the frames sent.
         self.last_read_frame: bytes | None = None
         self.recent_writes: deque[tuple[str, str]] = deque(maxlen=30)
+        self.recent_notifications: deque[tuple[str, str]] = deque(maxlen=30)
         self._time_synced_at: datetime | None = None
         self._time_synced_offset: timedelta | None = None
         self.sun_sync: SunSync | None = None
@@ -269,6 +273,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         if frame is None:
             return
         _LOGGER.debug("Fluval light %s decoded frame: %s", self.address, frame.hex())
+        self.recent_notifications.append((dt_util.now().isoformat(), frame.hex()))
         for waiter in list(self._read_waiters):
             if not waiter.done():
                 waiter.set_result(frame)
@@ -285,7 +290,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             raise BleakError("not connected")
         self.recent_writes.append((dt_util.now().isoformat(), frame.hex()))
         # Like the app's BleManager.sendBytes(): the plaintext frame is split
-        # into <=17-byte pieces and each is wrapped on its own (its own
+        # into <=15-byte pieces and each is wrapped on its own (its own
         # header and key) - not wrapped once and the wire bytes split, which
         # the light can't decode past the first piece and drops entirely.
         pieces = [frame[i : i + MAX_WRITE_CHUNK] for i in range(0, len(frame), MAX_WRITE_CHUNK)]
@@ -361,6 +366,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         """Program the Auto (sunrise/sunset) schedule, optionally switching to it."""
         await self._async_ensure_connected()
         await self._async_write(frame_set_auto(schedule))
+        await self._async_write_effect(schedule.dynamic)
         self.data.auto_schedule = schedule
         if activate:
             await asyncio.sleep(SCHEDULE_MODE_DELAY)
@@ -372,12 +378,20 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         """Program the Pro (multi-point) schedule, optionally switching to it."""
         await self._async_ensure_connected()
         await self._async_write(frame_set_pro(schedule))
+        await self._async_write_effect(schedule.dynamic)
         self.data.pro_schedule = schedule
         if activate:
             await asyncio.sleep(SCHEDULE_MODE_DELAY)
             await self._async_write(frame_set_mode(MODE_PRO))
             self.data.mode = MODE_PRO
         self.async_set_updated_data(self.data)
+
+    async def _async_write_effect(self, dynamic: bytes | None) -> None:
+        """Set the timed dynamic effect after a schedule (None leaves it as it is)."""
+        if dynamic is None:
+            return
+        await asyncio.sleep(SCHEDULE_MODE_DELAY)
+        await self._async_write(frame_set_effect(dynamic))
 
     async def async_play_effect(self, effect: int) -> None:
         """Play a dynamic effect now (CMD_DYN), switching to Manual mode first.

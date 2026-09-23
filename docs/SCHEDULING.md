@@ -9,7 +9,14 @@ responses are decoded on a best-effort basis to prefill that editor
 (`parse_auto_schedule()` / `parse_pro_schedule()`). The implementation
 always sends Auto's turn-off block (disabled via its enable byte when
 unused) so the variant is unambiguous. The dynamic-effect trailer is
-decoded and edited as a `DynamicEffect` (`schedule.py`): once edited in
+decoded and edited as a `DynamicEffect` (`schedule.py`). It is **read**
+as a trailer on the Auto/Pro `CMD_READ` responses (the same block in
+both modes - it is one setting), but **written** separately with
+`CMD_DYNAMIC_PERIOD` right after the schedule: the light dropped every
+`CMD_CYCLE`/`CMD_PRO` write carrying it, and the FluvalConnect app never
+sends one (per [nphil/fluvalble](https://github.com/nphil/fluvalble),
+whose APK-derived valid lengths are Auto `2N+11`/`2N+14` - without or
+with the turn-off block - and Pro `4 + points×(N+2)`). Once edited in
 the panel it is always sent (switched off with a `week` byte of `0x00`
 - neither the `0x80` bit nor any day, since the light obeying `0x80` alone
 is unconfirmed - rather than omitted), and a schedule saved without edits re-sends

@@ -32,11 +32,15 @@
   like diagnostics are imported on first use, so they can be newer than the
   running coordinator - read new coordinator attributes with getattr there.
   When a fix "doesn't work", first check the owner restarted.
-- Writes longer than 17 plaintext bytes (Auto/Pro schedules) must be split
-  *before* wrapping, each piece wrapped on its own (PROTOCOL.md §1/§4). Until
-  0.5.8 the wire was split instead, so the light silently dropped every
-  schedule while short commands worked. When the light "ignores" something,
-  compare diagnostics' `last_read_frame` with `recent_writes` first.
+- Writes too long for one BLE write (Auto/Pro schedules) are split into
+  15-byte plaintext pieces *before* wrapping, each wrapped on its own
+  (PROTOCOL.md §1/§4). CMD_CYCLE/CMD_PRO must NOT carry the dynamic-effect
+  trailer (the light drops them); the effect goes as its own
+  CMD_DYNAMIC_PERIOD (0x11) after the schedule. Both learned from
+  nphil/fluvalble, which works on real lights - check it before guessing.
+  When the light "ignores" something, compare diagnostics'
+  `last_read_frame` with `recent_writes` (and `recent_notifications`).
+  The light answers a read right after a schedule write with the old one.
 - Support both older (2024.x) and current Home Assistant cores; there's no
   test suite in the repo yet, so validate against real HA cores
   (`pytest-homeassistant-custom-component`) in a scratch venv.
