@@ -127,19 +127,40 @@ def decode_effect(dynamic: bytes | None) -> DynamicEffect:
     return (DynamicEffect.from_bytes(dynamic) if dynamic is not None else None) or default_effect()
 
 
+# Sun times move by a few minutes a day at most, so a copy of a weather sync
+# effect saved weeks ago still lands this close to the day/night period.
+WEATHER_COPY_TOLERANCE = 120
+
+
+def _near(a: TimeOfDay, b: TimeOfDay, tolerance: int) -> bool:
+    diff = abs(_minutes(a) - _minutes(b))
+    return min(diff, DAY_MINUTES - diff) <= tolerance
+
+
+def matches_weather_window(effect: DynamicEffect, schedule: AutoSchedule, tolerance: int = 0) -> bool:
+    """Whether `effect` runs every day over the schedule's day or night period.
+
+    That's the shape of weather sync's effects: the day period runs from
+    the sunrise-fade start to the sunset-fade end, the night period is the
+    reverse, so between them they cover the whole day.
+    """
+    if not all(effect.days):
+        return False
+    day = (schedule.sunrise_start, schedule.sunset_end)
+    return any(
+        _near(effect.start, start, tolerance) and _near(effect.end, end, tolerance)
+        for start, end in (day, day[::-1])
+    )
+
+
 def is_weather_effect(schedule: AutoSchedule) -> bool:
     """Whether the schedule's effect is one weather sync put there.
 
-    Weather sync's effects run every day over exactly the schedule's day
-    period (sunrise-fade start to sunset-fade end) or its night period (the
-    reverse), so between them they cover the whole day. Left behind after
-    weather sync is turned off, one keeps playing over the schedule.
+    Left behind after weather sync is turned off, one keeps playing over
+    the schedule.
     """
     effect = DynamicEffect.from_bytes(schedule.dynamic) if schedule.dynamic is not None else None
-    if effect is None or not all(effect.days):
-        return False
-    day = (schedule.sunrise_start, schedule.sunset_end)
-    return (effect.start, effect.end) in (day, day[::-1])
+    return effect is not None and matches_weather_window(effect, schedule)
 
 
 def own_effect(schedule: AutoSchedule) -> DynamicEffect:

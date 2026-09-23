@@ -30,7 +30,9 @@ from .schedule import (
     default_auto_schedule,
     default_effect,
     default_sun_sync_config,
+    WEATHER_COPY_TOLERANCE,
     is_weather_effect,
+    matches_weather_window,
     sun_sync_from_dict,
     sun_sync_to_dict,
 )
@@ -211,8 +213,8 @@ class SunSync:
             if weather is not None and weather.active:
                 # Weather sync picks the effect instead of the settings.
                 schedule.dynamic = weather.dynamic_for(schedule)
-            elif schedule.dynamic is None:
-                schedule.dynamic = self.fallback_dynamic(self.coordinator.data.auto_schedule)
+            else:
+                schedule.dynamic = self.fallback_dynamic(self.coordinator.data.auto_schedule, schedule)
             await self.coordinator.async_set_auto_schedule(schedule, activate)
         except SunSyncError as err:
             self.last_error = str(err)
@@ -237,13 +239,17 @@ class SunSync:
         )
         return schedule
 
-    def fallback_dynamic(self, current: AutoSchedule | None) -> bytes | None:
+    def fallback_dynamic(
+        self, current: AutoSchedule | None, schedule: AutoSchedule | None = None
+    ) -> bytes | None:
         """The effect block for the Auto schedule when weather sync isn't picking one.
 
         That's the effect in the settings; without one, whatever effect the
         light's Auto schedule already has - unless weather sync left it there,
-        which is switched off rather than left playing.
+        which is switched off rather than left playing. `schedule` is the one
+        being pushed, if not `current`.
         """
+        self._drop_weather_copy(schedule or current)
         if self.config is not None and self.config.effect is not None:
             return self.config.effect.to_bytes()
         if current is None:
@@ -251,6 +257,33 @@ class SunSync:
         if is_weather_effect(current):
             return default_effect().to_bytes()
         return current.dynamic
+
+    @callback
+    def _drop_weather_copy(self, schedule: AutoSchedule | None) -> None:
+        """Switch off a weather sync effect copied into the settings.
+
+        The panel used to prefill the settings' effect from the light's Auto
+        schedule, so saving them while weather sync was on stored its effect
+        (say, a cloudy one over the whole day) as sun sync's own - which then
+        kept coming back after weather sync was turned off.
+        """
+        effect = self.config.effect if self.config is not None else None
+        if (
+            effect is None
+            or schedule is None
+            or not effect.enabled
+            or not matches_weather_window(effect, schedule, WEATHER_COPY_TOLERANCE)
+        ):
+            return
+        _LOGGER.info(
+            "Sun sync for %s: switching off effect %s over %s-%s, left over from weather sync",
+            self.coordinator.address,
+            effect.effect,
+            effect.start,
+            effect.end,
+        )
+        self.config.effect = default_effect()
+        self._save()
 
     async def _async_push_with_retry(self) -> None:
         if not self.enabled:
