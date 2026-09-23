@@ -134,7 +134,7 @@ function chartSvg(curves, channels, markers = [], bands = []) {
       (m) =>
         `<line class="marker ${m.cls || ""}" x1="${x(m.at)}" x2="${x(m.at)}" y1="${y(100)}" y2="${y(0)}"/>` +
         // Sun markers are labelled at the bottom, clear of the daytime curves.
-        `<text class="axis" x="${x(m.at) + 4}" y="${m.cls === "sun" ? y(0) - 6 : y(100) + 12}">${escapeHtml(m.label)}</text>`
+        `<text class="axis ${m.cls === "now" ? "now-label" : ""}" x="${x(m.at) + 4}" y="${m.cls === "sun" ? y(0) - 6 : m.cls === "now" ? y(100) + 36 : y(100) + 12}">${escapeHtml(m.label)}</text>`
     )
     .join("");
   const lines = curves
@@ -228,6 +228,8 @@ const STYLE = `
   .chart .grid { stroke: var(--divider-color); stroke-width: 1; }
   .chart .marker { stroke: var(--error-color, #db4437); stroke-width: 1.5; stroke-dasharray: 4 3; }
   .chart .marker.sun { stroke: var(--warning-color, #f9a825); }
+  .chart .marker.now { stroke: var(--primary-text-color, #212121); stroke-width: 1.5; stroke-dasharray: none; opacity: 0.7; }
+  .chart .now-label { fill: var(--primary-text-color, #212121); font-weight: 500; }
   .chart .band { fill: var(--primary-color); opacity: 0.1; }
   .chart .band-label { fill: var(--primary-color); }
   .days { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -437,8 +439,17 @@ class FluvalSchedulePanel extends HTMLElement {
     this._message = null;
     this._renderContent();
     try {
-      await this._hass.callWS({ type: `${DOMAIN}/play_effect`, entry_id: this._selected, effect: id });
-      this._message = { type: "success", text: `Asked the light to play ${name}.` };
+      const result = await this._hass.callWS({ type: `${DOMAIN}/play_effect`, entry_id: this._selected, effect: id });
+      if (result && result.light) this._replaceLight(result.light);
+      const previous = result && result.previous_mode;
+      const switched = previous && previous !== "manual";
+      this._message = {
+        type: "success",
+        text: switched
+          ? `Playing ${name}. The light only plays effects in Manual mode, so it was switched to Manual.`
+          : `Playing ${name}.`,
+        returnMode: switched && MODE_LABELS[previous] ? previous : null,
+      };
     } catch (err) {
       this._message = { type: "error", text: err.message || String(err) };
     }
@@ -587,7 +598,10 @@ class FluvalSchedulePanel extends HTMLElement {
     const light = this._light();
     let html = "";
     if (this._message) {
-      html += `<div class="message ${this._message.type}">${escapeHtml(this._message.text)}</div>`;
+      const back = this._message.returnMode
+        ? ` <button class="secondary small" data-action="mode" data-mode="${this._message.returnMode}" ${this._busy ? "disabled" : ""}>Back to ${MODE_LABELS[this._message.returnMode]}</button>`
+        : "";
+      html += `<div class="message ${this._message.type}">${escapeHtml(this._message.text)}${back}</div>`;
     }
     html += this._renderHeaderCard(light);
     if (!light.loaded) {
@@ -674,11 +688,11 @@ class FluvalSchedulePanel extends HTMLElement {
           <label class="field">From<input type="time" value="${effect.start}" data-path="${path}.start" required></label>
           <label class="field">Until<input type="time" value="${effect.end}" data-path="${path}.end" required></label>
           <button class="secondary" data-action="preview-effect" data-path="${path}" ${this._busy || !known ? "disabled" : ""}
-            title="Experimental: asks the light to play this effect now">Preview on light</button>
+            title="Plays this effect on the light now (switches it to Manual mode)">Preview on light</button>
         </div>
         <div class="days" role="group" aria-label="Days">${days}</div>
       </div>
-      <p class="note">The light plays the effect over its schedule between these times on the chosen days; a window can run past midnight. Preview is experimental: the effect command's behaviour hasn't been confirmed on real hardware.</p>`;
+      <p class="note">The light plays the effect over its schedule between these times on the chosen days; a window can run past midnight. Preview switches the light to Manual mode, the only mode it plays effects on demand in; you can switch back afterwards.</p>`;
   }
 
   _renderAuto(light) {
@@ -824,7 +838,7 @@ class FluvalSchedulePanel extends HTMLElement {
     const preview =
       value === null
         ? ""
-        : `<button class="secondary small" data-action="play-effect" data-effect="${value}" ${this._busy ? "disabled" : ""} title="Experimental: asks the light to play this effect now">Preview</button>`;
+        : `<button class="secondary small" data-action="play-effect" data-effect="${value}" ${this._busy ? "disabled" : ""} title="Plays this effect on the light now (switches it to Manual mode)">Preview</button>`;
     return `<select data-path="${path}" data-type="effect" data-rerender-weather aria-label="${escapeHtml(label)}">${options}</select>${preview}`;
   }
 
@@ -895,6 +909,33 @@ class FluvalSchedulePanel extends HTMLElement {
       </div>`;
   }
 
+  // The current time of day in Home Assistant's time zone, which is the
+  // clock the light is synced to (the browser's may differ).
+  _nowMarker() {
+    const zone = this._hass && this._hass.config && this._hass.config.time_zone;
+    let hour, minute;
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: zone || undefined, hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+        .formatToParts(new Date());
+      hour = Number(parts.find((p) => p.type === "hour").value);
+      minute = Number(parts.find((p) => p.type === "minute").value);
+    } catch (err) {
+      const now = new Date();
+      hour = now.getHours();
+      minute = now.getMinutes();
+    }
+    return { at: hour * 60 + minute, label: "Now", cls: "now" };
+  }
+
+  connectedCallback() {
+    // Keep the "Now" line moving.
+    this._clock = setInterval(() => this._renderChart(), 60 * 1000);
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._clock);
+  }
+
   _renderChart() {
     const container = this.shadowRoot.querySelector("[data-chart]");
     const light = this._light();
@@ -933,7 +974,7 @@ class FluvalSchedulePanel extends HTMLElement {
     }
     // A cleared or half-typed time can't be plotted; keep the last chart.
     if (curves.flat(2).some(Number.isNaN) || markers.some((m) => Number.isNaN(m.at))) return;
-    container.innerHTML = chartSvg(curves, channels, markers, bands);
+    container.innerHTML = chartSvg(curves, channels, [...markers, this._nowMarker()], bands);
   }
 
   // The sun-synced day with the effects weather sync would play right now
@@ -957,7 +998,7 @@ class FluvalSchedulePanel extends HTMLElement {
     const dayEnd = toMinutes(a.sunset_end);
     if (weather !== null && weather !== undefined) bands.push({ start: dayStart, end: dayEnd, label: this._effectName(weather) });
     if (night !== null && night !== undefined) bands.push({ start: dayEnd, end: dayStart, label: this._effectName(night) });
-    container.innerHTML = chartSvg(curves, light.channels, markers, bands);
+    container.innerHTML = chartSvg(curves, light.channels, [...markers, this._nowMarker()], bands);
   }
 }
 

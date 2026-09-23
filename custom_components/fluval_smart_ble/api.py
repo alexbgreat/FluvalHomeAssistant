@@ -380,13 +380,21 @@ async def ws_set_weather_sync(
 async def ws_play_effect(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Ask the light to play a dynamic effect now, to preview it (experimental)."""
+    """Play a dynamic effect now, to preview it.
+
+    The light only plays effects in Manual mode, so it's switched there
+    first; the result says which mode it was in, so the panel can offer to
+    switch back.
+    """
     if (found := _lookup(hass, connection, msg)) is None:
         return
-    _entry, coordinator = found
+    entry, coordinator = found
+    previous = coordinator.effective_mode
     try:
         await coordinator.async_play_effect(msg["effect"])
     except (BleakError, TimeoutError) as err:
         _send_bluetooth_error(connection, msg, coordinator, err)
         return
-    connection.send_result(msg["id"], {})
+    connection.send_result(
+        msg["id"], {"previous_mode": previous, "light": _describe(hass, entry)}
+    )

@@ -113,9 +113,11 @@ midnight (e.g. moonlight 22:00-01:00), and it's shaded on the chart.
 Each schedule has its own effect; an effect set up in the FluvalSmart app
 is shown and can be edited here.
 
-**Preview on light** asks the light to play the selected effect right
-away. That command's behaviour hasn't been confirmed on real hardware,
-so treat it as experimental.
+**Preview on light** plays the selected effect on the light right away.
+The light only plays effects on demand in Manual mode, so previewing
+switches it to Manual; the confirmation then offers a **Back to …**
+button to return to the mode it was in (sun and weather sync settings
+are kept meanwhile).
 
 The schedule commands were reverse engineered from the app but haven't
 been exercised against every model; if a light doesn't behave as

@@ -341,6 +341,16 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         self.async_set_updated_data(self.data)
 
     async def async_play_effect(self, effect: int) -> None:
-        """Ask the light to play a dynamic effect now (experimental, CMD_DYN)."""
+        """Play a dynamic effect now (CMD_DYN), switching to Manual mode first.
+
+        The light only plays CMD_DYN effects in Manual mode (confirmed on an
+        Aquasky); in Auto/Pro it ignores them. The raw mode switch leaves sun
+        and weather sync settings alone, so the previous mode can be restored.
+        """
         await self._async_ensure_connected()
+        if self.data.mode != MODE_MANUAL:
+            await self._async_write(frame_set_mode(MODE_MANUAL))
+            self.data.mode = MODE_MANUAL
+            await asyncio.sleep(SCHEDULE_MODE_DELAY)
         await self._async_write(frame_play_effect(effect))
+        self.async_set_updated_data(self.data)
