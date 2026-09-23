@@ -6,6 +6,8 @@
   `main` locally (a `--no-ff` merge commit, no rebasing or force-pushing)
   and push `main` to origin. No pull request is needed for this; the owner
   has authorized merging into `main` directly.
+- The owner tests from `main`, so once a fix is committed and validated,
+  merge it into `main` and push without waiting to be asked.
 - Commit memory/notes like this file to the repository: sessions run in
   ephemeral containers, so anything not pushed is lost.
 
@@ -23,6 +25,9 @@
   changes and at the day/night boundaries (sunrise-fade start, sunset-fade
   end). It must not re-run sun sync's compute for that: after noon sun sync
   targets tomorrow's sun times, which shifts the boundaries.
+  Its effects cover the whole day between them, so leaving weather sync
+  must replace the effect (`is_weather_effect()` recognises one by its
+  window matching the schedule's day/night period), never keep it.
 - Support both older (2024.x) and current Home Assistant cores; there's no
   test suite in the repo yet, so validate against real HA cores
   (`pytest-homeassistant-custom-component`) in a scratch venv.
