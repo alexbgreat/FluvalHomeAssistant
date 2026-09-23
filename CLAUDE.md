@@ -6,6 +6,8 @@
   `main` locally (a `--no-ff` merge commit, no rebasing or force-pushing)
   and push `main` to origin. No pull request is needed for this; the owner
   has authorized merging into `main` directly.
+- The owner tests from `main`, so once a fix is committed and validated,
+  merge it into `main` and push without waiting to be asked.
 - Commit memory/notes like this file to the repository: sessions run in
   ephemeral containers, so anything not pushed is lost.
 
