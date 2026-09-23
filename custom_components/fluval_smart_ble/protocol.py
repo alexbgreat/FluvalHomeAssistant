@@ -37,6 +37,7 @@ from .const import (
     CMD_CTRL,
     CMD_CYCLE,
     CMD_DYN,
+    CMD_DYNAMIC_PERIOD,
     CMD_FIND,
     CMD_MODE,
     CMD_PRO,
@@ -251,8 +252,10 @@ def frame_set_auto(schedule: AutoSchedule) -> bytes:
 
     The optional blocks after the base schedule are told apart purely by
     total length, so the turn-off block is always sent (disabled via its
-    own enable byte when unused) to keep the variant unambiguous. A
-    dynamic-effect block read back from the light is re-sent unchanged.
+    own enable byte when unused) to keep the variant unambiguous. The
+    dynamic effect is *not* appended: the light drops a CMD_CYCLE carrying
+    it (the FluvalConnect app never sends one), so it goes separately as
+    frame_set_effect().
     """
     args = bytearray()
     args += _time_bytes(schedule.sunrise_start) + _time_bytes(schedule.sunrise_end)
@@ -260,8 +263,6 @@ def frame_set_auto(schedule: AutoSchedule) -> bytes:
     args += _time_bytes(schedule.sunset_start) + _time_bytes(schedule.sunset_end)
     args += bytes(clamp_percent(v) for v in schedule.night)
     args += bytes([1 if schedule.turnoff_enabled else 0]) + _time_bytes(schedule.turnoff)
-    if schedule.dynamic is not None and len(schedule.dynamic) == DYNAMIC_BLOCK_LEN:
-        args += schedule.dynamic
     return build_frame(CMD_CYCLE, bytes(args))
 
 
@@ -269,7 +270,8 @@ def frame_set_pro(schedule: ProSchedule) -> bytes:
     """Build a CMD_PRO frame programming the Pro mode schedule.
 
     Points are sorted by time of day first, as the app does before
-    sending them.
+    sending them. As with Auto, the dynamic effect goes separately
+    (frame_set_effect()), never as a trailer.
     """
     points = schedule.sorted_points()
     if not PRO_MIN_POINTS <= len(points) <= PRO_MAX_POINTS:
@@ -278,9 +280,20 @@ def frame_set_pro(schedule: ProSchedule) -> bytes:
     for point in points:
         args += _time_bytes(point.at)
         args += bytes(clamp_percent(v) for v in point.values)
-    if schedule.dynamic is not None and len(schedule.dynamic) == DYNAMIC_BLOCK_LEN:
-        args += schedule.dynamic
     return build_frame(CMD_PRO, bytes(args))
+
+
+def frame_set_effect(dynamic: bytes) -> bytes:
+    """Build a CMD_DYNAMIC_PERIOD frame setting the light's timed dynamic effect.
+
+    `dynamic` is the 6-byte block (week, start/end time, effect ID) that the
+    light reports after its Auto/Pro schedule in a CMD_READ response; it's
+    one setting shared by both modes. A switched-off block (week byte 0)
+    stops the effect.
+    """
+    if len(dynamic) != DYNAMIC_BLOCK_LEN:
+        raise ValueError("a dynamic effect block is 6 bytes")
+    return build_frame(CMD_DYNAMIC_PERIOD, bytes(dynamic))
 
 
 def parse_auto_schedule(args: bytes, channel_count: int) -> AutoSchedule | None:

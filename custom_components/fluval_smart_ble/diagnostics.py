@@ -80,5 +80,8 @@ async def async_get_config_entry_diagnostics(
         ),
         "weather_sync": coordinator.weather_sync.describe() if coordinator.weather_sync is not None else None,
         "recent_writes": [{"at": at, "frame": f} for at, f in getattr(coordinator, "recent_writes", ())],
+        "recent_notifications": [
+            {"at": at, "frame": f} for at, f in getattr(coordinator, "recent_notifications", ())
+        ],
         "current_advertisement": advertisement,
     }
