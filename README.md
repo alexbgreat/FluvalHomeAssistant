@@ -42,7 +42,9 @@ Lights that only support Wi-Fi (no Bluetooth) are not supported.
   demand.
 - Automatic time sync: the light's Auto/Pro schedules run against its
   own clock, which drifts and resets on power loss, so this integration
-  pushes Home Assistant's current local time to it on every connection.
+  pushes Home Assistant's current local time to it on every connection,
+  then again every hour and whenever the UTC offset changes (daylight
+  saving) while connected.
 - A persistent BLE connection with automatic reconnect, and periodic
   polling to stay in sync with changes made from the FluvalSmart app or
   the light's own buttons.

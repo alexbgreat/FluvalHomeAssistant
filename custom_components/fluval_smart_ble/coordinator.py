@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -59,6 +60,10 @@ CHUNK_DELAY = 0.008
 # Pause between programming a schedule and switching into its mode, so a
 # long multi-chunk schedule frame is processed before the mode change.
 SCHEDULE_MODE_DELAY = 0.3
+# The light's clock drifts, and a connection can stay up for weeks, so the
+# time is re-sent this often while connected - and at the next poll after
+# the UTC offset changes (daylight saving), rather than only on connect.
+TIME_SYNC_INTERVAL = timedelta(hours=1)
 
 
 @dataclass
@@ -95,6 +100,8 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         self._reassembler = FrameReassembler()
         self._read_waiters: list[asyncio.Future[bytes]] = []
         self._unloading = False
+        self._time_synced_at: datetime | None = None
+        self._time_synced_offset: timedelta | None = None
         self.sun_sync: SunSync | None = None
         self.weather_sync: WeatherSync | None = None
 
@@ -136,6 +143,11 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
 
     async def _async_update_data(self) -> FluvalState:
         await self._async_ensure_connected()
+        if self._time_sync_due():
+            try:
+                await self._async_write_time()
+            except BleakError:
+                _LOGGER.debug("Fluval light %s: syncing time failed", self.address, exc_info=True)
         try:
             frame = await self._async_send_and_wait(frame_read())
         except (BleakError, TimeoutError, EOFError) as err:
@@ -217,8 +229,9 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             _LOGGER.debug("Fluval light %s connected, waiting for module to settle", self.address)
             await asyncio.sleep(CONNECT_SETTLE_DELAY)
 
+            self._time_synced_at = None
             try:
-                await self._async_write(frame_sync_time(dt_util.now()))
+                await self._async_write_time()
             except BleakError:
                 _LOGGER.debug(
                     "Fluval light %s: syncing time on connect failed", self.address, exc_info=True
@@ -227,7 +240,22 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
     async def async_sync_time(self) -> None:
         """Push the current local time to the light's on-board clock."""
         await self._async_ensure_connected()
-        await self._async_write(frame_sync_time(dt_util.now()))
+        await self._async_write_time()
+
+    def _time_sync_due(self) -> bool:
+        if self._time_synced_at is None:
+            return True
+        now = dt_util.now()
+        return (
+            now - self._time_synced_at >= TIME_SYNC_INTERVAL
+            or now.utcoffset() != self._time_synced_offset
+        )
+
+    async def _async_write_time(self) -> None:
+        now = dt_util.now()
+        await self._async_write(frame_sync_time(now))
+        self._time_synced_at = now
+        self._time_synced_offset = now.utcoffset()
 
     def _notification_handler(self, _characteristic: BleakGATTCharacteristic, data: bytearray) -> None:
         _LOGGER.debug("Fluval light %s notification: %s", self.address, bytes(data).hex())

@@ -179,7 +179,7 @@ light) or `←` (light to app/HA, i.e. a notification).
 | `0x0B` | `CMD_PREVIEW` | → | same layout as `CMD_CTRL` | Reference only, see SCHEDULING.md |
 | `0x0C` | `CMD_STOP_PREVIEW` | → | no args | Reference only |
 | `0x0D` | `CMD_READTIME` | → / ← | no args (request); response layout not captured | Reference only (request builder exists conceptually; not wired up) |
-| `0x0E` | `CMD_SYNCTIME` | → | 7 bytes: year-2000, month(0-based), day, weekday(0=Sun..6=Sat), hour, minute, second | **Implemented** (auto-sync on connect + "Sync Time" button) |
+| `0x0E` | `CMD_SYNCTIME` | → | 7 bytes: year-2000, month(0-based), day, weekday(0=Sun..6=Sat), hour, minute, second | **Implemented** (auto-sync on connect, hourly and on UTC-offset changes, + "Sync Time" button) |
 | `0x0F` | `CMD_FIND` | → | no args | Implemented ("Find" button) |
 | `0x10` | `CMD_PRO` | → | Pro-mode schedule, see SCHEDULING.md | Implemented (sidebar schedule editor) |
 | `0x11` | `CMD_DYNAMIC_PERIOD` | → | 6 bytes: week bitmask, RampTime×4, mode | Reference only, see SCHEDULING.md |
