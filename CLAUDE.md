@@ -28,6 +28,10 @@
   Its effects cover the whole day between them, so leaving weather sync
   must replace the effect (`is_weather_effect()` recognises one by its
   window matching the schedule's day/night period), never keep it.
+- An update only takes effect after a full Home Assistant restart; platforms
+  like diagnostics are imported on first use, so they can be newer than the
+  running coordinator - read new coordinator attributes with getattr there.
+  When a fix "doesn't work", first check the owner restarted.
 - Support both older (2024.x) and current Home Assistant cores; there's no
   test suite in the repo yet, so validate against real HA cores
   (`pytest-homeassistant-custom-component`) in a scratch venv.
