@@ -127,6 +127,26 @@ def decode_effect(dynamic: bytes | None) -> DynamicEffect:
     return (DynamicEffect.from_bytes(dynamic) if dynamic is not None else None) or default_effect()
 
 
+def is_weather_effect(schedule: AutoSchedule) -> bool:
+    """Whether the schedule's effect is one weather sync put there.
+
+    Weather sync's effects run every day over exactly the schedule's day
+    period (sunrise-fade start to sunset-fade end) or its night period (the
+    reverse), so between them they cover the whole day. Left behind after
+    weather sync is turned off, one keeps playing over the schedule.
+    """
+    effect = DynamicEffect.from_bytes(schedule.dynamic) if schedule.dynamic is not None else None
+    if effect is None or not all(effect.days):
+        return False
+    day = (schedule.sunrise_start, schedule.sunset_end)
+    return (effect.start, effect.end) in (day, day[::-1])
+
+
+def own_effect(schedule: AutoSchedule) -> DynamicEffect:
+    """The Auto schedule's effect, or the (disabled) default in place of a weather sync one."""
+    return default_effect() if is_weather_effect(schedule) else decode_effect(schedule.dynamic)
+
+
 @dataclass
 class AutoSchedule:
     """Auto mode: fade night -> day over sunrise, day -> night over sunset."""
@@ -259,7 +279,7 @@ def default_sun_sync_config(auto: AutoSchedule) -> SunSyncConfig:
         night=list(auto.night),
         turnoff_enabled=auto.turnoff_enabled,
         turnoff=auto.turnoff,
-        effect=decode_effect(auto.dynamic),
+        effect=own_effect(auto),
     )
 
 

@@ -25,6 +25,7 @@ from .schedule import (
     decode_effect,
     effect_from_dict,
     effect_to_dict,
+    own_effect,
     pro_from_dict,
     pro_to_dict,
     sun_sync_from_dict,
@@ -106,7 +107,9 @@ def _describe(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
         mode=coordinator.effective_mode,
         auto=auto_dict,
         auto_source=auto_source,
-        auto_effect=effect_to_dict(decode_effect(auto.dynamic)),
+        # Not weather sync's effect: saving it from the Auto tab would leave it
+        # playing once weather sync is off.
+        auto_effect=effect_to_dict(own_effect(auto)),
         pro=pro_dict,
         pro_source=pro_source,
         pro_effect=effect_to_dict(decode_effect(pro.dynamic)),

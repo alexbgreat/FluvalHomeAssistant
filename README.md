@@ -222,4 +222,6 @@ Only the condition matters: attribute updates (temperature, wind, ...)
 don't touch the light, and a weather entity that goes briefly unavailable
 keeps the last known weather. If the light can't be reached, Home
 Assistant retries every 10 minutes. Choosing any other mode turns weather
-sync off (**Turn off weather sync** goes back to plain sun sync).
+sync off (**Turn off weather sync** goes back to plain sun sync). Turning
+it off also takes its effect off the light's Auto schedule (replaced by the
+Sun sync tab's effect, or none), so it doesn't keep playing afterwards.

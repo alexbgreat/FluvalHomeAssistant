@@ -9,6 +9,7 @@ pushes the result to the light as its Auto schedule.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -27,7 +28,9 @@ from .schedule import (
     SunSyncConfig,
     build_sun_schedule,
     default_auto_schedule,
+    default_effect,
     default_sun_sync_config,
+    is_weather_effect,
     sun_sync_from_dict,
     sun_sync_to_dict,
 )
@@ -208,10 +211,8 @@ class SunSync:
             if weather is not None and weather.active:
                 # Weather sync picks the effect instead of the settings.
                 schedule.dynamic = weather.dynamic_for(schedule)
-            # Without an effect in the settings, keep whatever dynamic effect
-            # the light's Auto schedule already has.
-            elif schedule.dynamic is None and (current := self.coordinator.data.auto_schedule) is not None:
-                schedule.dynamic = current.dynamic
+            elif schedule.dynamic is None:
+                schedule.dynamic = self.fallback_dynamic(self.coordinator.data.auto_schedule)
             await self.coordinator.async_set_auto_schedule(schedule, activate)
         except SunSyncError as err:
             self.last_error = str(err)
@@ -235,6 +236,21 @@ class SunSync:
             schedule.sunset_end,
         )
         return schedule
+
+    def fallback_dynamic(self, current: AutoSchedule | None) -> bytes | None:
+        """The effect block for the Auto schedule when weather sync isn't picking one.
+
+        That's the effect in the settings; without one, whatever effect the
+        light's Auto schedule already has - unless weather sync left it there,
+        which is switched off rather than left playing.
+        """
+        if self.config is not None and self.config.effect is not None:
+            return self.config.effect.to_bytes()
+        if current is None:
+            return None
+        if is_weather_effect(current):
+            return default_effect().to_bytes()
+        return current.dynamic
 
     async def _async_push_with_retry(self) -> None:
         if not self.enabled:
@@ -302,4 +318,18 @@ async def async_select_mode(coordinator: FluvalCoordinator, option: str) -> None
         return
     if sun_sync is not None:
         sun_sync.async_disable()
+        await _async_drop_weather_effect(coordinator, sun_sync)
     await coordinator.async_set_mode(MODES_REVERSE[option])
+
+
+async def _async_drop_weather_effect(coordinator: FluvalCoordinator, sun_sync: SunSync) -> None:
+    """Take weather sync's effect off the light's Auto schedule, now that it's off.
+
+    Its effects cover the whole day between them, so one left behind would
+    keep playing over the Auto schedule.
+    """
+    current = coordinator.data.auto_schedule
+    if current is None or not is_weather_effect(current):
+        return
+    dynamic = sun_sync.fallback_dynamic(current)
+    await coordinator.async_set_auto_schedule(replace(current, dynamic=dynamic), activate=False)
