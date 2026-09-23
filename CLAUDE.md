@@ -38,6 +38,7 @@
   trailer (the light drops them); the effect goes as its own
   CMD_DYNAMIC_PERIOD (0x11) after the schedule. Both learned from
   nphil/fluvalble, which works on real lights - check it before guessing.
+  Confirmed working on the owner's Aquasky 600mm (model 321) in 0.6.0.
   When the light "ignores" something, compare diagnostics'
   `last_read_frame` with `recent_writes` (and `recent_notifications`).
   The light answers a read right after a schedule write with the old one.
