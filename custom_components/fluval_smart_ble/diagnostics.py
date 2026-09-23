@@ -66,7 +66,9 @@ async def async_get_config_entry_diagnostics(
             "channel_values": coordinator.data.channel_values,
             "last_update_success": coordinator.last_update_success,
             "effective_mode": coordinator.effective_mode,
-            "last_read_frame": coordinator.last_read_frame.hex() if coordinator.last_read_frame else None,
+            # getattr: this platform is imported on first use, so after an
+            # update without a restart it can be newer than the coordinator.
+            "last_read_frame": frame.hex() if (frame := getattr(coordinator, "last_read_frame", None)) else None,
         },
         "auto_schedule": auto_to_dict(auto) if auto is not None else None,
         "auto_effect": effect_to_dict(decode_effect(auto.dynamic)) if auto is not None else None,
@@ -77,6 +79,6 @@ async def async_get_config_entry_diagnostics(
             coordinator.sun_sync.describe(auto) if coordinator.sun_sync is not None and auto is not None else None
         ),
         "weather_sync": coordinator.weather_sync.describe() if coordinator.weather_sync is not None else None,
-        "recent_writes": [{"at": at, "frame": frame} for at, frame in coordinator.recent_writes],
+        "recent_writes": [{"at": at, "frame": f} for at, f in getattr(coordinator, "recent_writes", ())],
         "current_advertisement": advertisement,
     }
