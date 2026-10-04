@@ -42,6 +42,14 @@
   When the light "ignores" something, compare diagnostics'
   `last_read_frame` with `recent_writes` (and `recent_notifications`).
   The light answers a read right after a schedule write with the old one.
+- Connection handling (0.6.1, after a power cut took the owner's ESPHome
+  Bluetooth proxy down and the integration needed a reload): every step after
+  `establish_connection` and every GATT write is time-bounded, a half-set-up
+  client is always disconnected (the light takes one connection and stops
+  advertising while it has one), a link with no answers for
+  `FAILED_POLLS_BEFORE_RECONNECT` polls is dropped, and an advertisement from
+  the light wakes the poll loop to reconnect. "Not visible" is an
+  `UpdateFailed` (logged once), not a traceback every poll.
 - Support both older (2024.x) and current Home Assistant cores; there's no
   test suite in the repo yet, so validate against real HA cores
   (`pytest-homeassistant-custom-component`) in a scratch venv.

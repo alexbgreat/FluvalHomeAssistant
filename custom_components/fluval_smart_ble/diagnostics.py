@@ -65,6 +65,8 @@ async def async_get_config_entry_diagnostics(
             "mode": coordinator.data.mode,
             "channel_values": coordinator.data.channel_values,
             "last_update_success": coordinator.last_update_success,
+            "connected": getattr(coordinator, "is_connected", None),
+            "failed_polls_in_a_row": getattr(coordinator, "_failed_polls", None),
             "effective_mode": coordinator.effective_mode,
             # getattr: this platform is imported on first use, so after an
             # update without a restart it can be newer than the coordinator.
