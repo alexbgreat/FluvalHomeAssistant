@@ -14,7 +14,7 @@ from bleak_retry_connector import BleakClientWithServiceCache, establish_connect
 
 import homeassistant.util.dt as dt_util
 from homeassistant.components import bluetooth
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -56,7 +56,27 @@ _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT = 15
 CONNECT_SETTLE_DELAY = 0.7
+# Bounds for everything after establish_connection() returns (notifications,
+# settle, time sync) and for each GATT write: through a Bluetooth proxy that
+# is rebooting or has just come back, these can otherwise wait forever while
+# holding the connect lock, which wedges the poll loop until a reload.
+CONNECT_SETUP_TIMEOUT = 15
+WRITE_TIMEOUT = 10
+DISCONNECT_TIMEOUT = 10
+# Upper bound for one whole poll (connect attempts included), so nothing can
+# stop the poll loop for good.
+UPDATE_TIMEOUT = 120
 READ_RESPONSE_TIMEOUT = 5
+# A read is resent once before a poll counts as failed: the light now and
+# then doesn't answer one, which made the entities flap unavailable.
+READ_ATTEMPTS = 2
+# After this many polls in a row without an answer the link is treated as
+# dead (a proxy can keep reporting a connection the light no longer has)
+# and dropped, so the next poll makes a fresh one.
+FAILED_POLLS_BEFORE_RECONNECT = 2
+# Least time between polls, even when an advertisement asks for one sooner,
+# so a light that advertises but won't connect isn't retried back to back.
+MIN_POLL_GAP = 5
 # Plaintext bytes per write; each is wrapped separately (3 header bytes).
 # 15 as in the FluvalConnect app's encoder, though the light's own replies
 # come in 17-byte pieces.
@@ -105,6 +125,11 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         self._reassembler = FrameReassembler()
         self._read_waiters: list[asyncio.Future[bytes]] = []
         self._unloading = False
+        self._failed_polls = 0
+        self._poll_task: asyncio.Task[None] | None = None
+        # Wakes the poll loop early, e.g. when the light is seen again.
+        self._wake = asyncio.Event()
+        self._unsub_advertisements: CALLBACK_TYPE | None = None
         # For diagnostics: the last CMD_READ response and the frames sent.
         self.last_read_frame: bytes | None = None
         self.recent_writes: deque[tuple[str, str]] = deque(maxlen=30)
@@ -128,42 +153,159 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
 
     async def async_setup(self) -> None:
         """Perform the first connection and start periodic polling."""
-        await self._async_ensure_connected()
+        try:
+            async with asyncio.timeout(UPDATE_TIMEOUT):
+                await self._async_ensure_connected()
+        except TimeoutError as err:
+            await self._async_drop_connection("setup timed out")
+            raise BleakError(f"Timed out connecting to Fluval light {self.address}") from err
         await self.async_refresh()
-        self.hass.async_create_background_task(
+        self._unsub_advertisements = bluetooth.async_register_callback(
+            self.hass,
+            self._async_advertisement,
+            bluetooth.BluetoothCallbackMatcher(address=self.address, connectable=True),
+            bluetooth.BluetoothScanningMode.PASSIVE,
+        )
+        self._poll_task = self.hass.async_create_background_task(
             self._async_poll_loop(), name=f"fluval_smart_ble-poll-{self.address}"
         )
 
+    @callback
+    def _async_advertisement(
+        self, _service_info: bluetooth.BluetoothServiceInfoBleak, _change: bluetooth.BluetoothChange
+    ) -> None:
+        """The light was heard: if it isn't connected, reconnect now rather than at the next poll.
+
+        After a Bluetooth proxy or the light itself comes back, this is the
+        first sign of it.
+        """
+        if not self._unloading and not self.is_connected:
+            self._wake.set()
+
+    @property
+    def is_connected(self) -> bool:
+        return self._client is not None and self._client.is_connected
+
     async def _async_poll_loop(self) -> None:
         while not self._unloading:
+            self._wake.clear()
             try:
                 await self.async_refresh()
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if self._unloading or (task is not None and task.cancelling()):
+                    raise
+                # Cancelled from inside a BLE call (not this task): carry on.
+                _LOGGER.debug("Refresh of %s was cancelled", self.address, exc_info=True)
             except Exception:  # noqa: BLE001 - keep the poll loop alive
                 _LOGGER.debug("Periodic refresh failed for %s", self.address, exc_info=True)
-            await asyncio.sleep(UPDATE_INTERVAL_SECONDS)
+            if self._unloading:
+                break
+            # While disconnected, an advertisement from the light (or the
+            # disconnect itself) ends the wait early.
+            await asyncio.sleep(MIN_POLL_GAP)
+            try:
+                async with asyncio.timeout(UPDATE_INTERVAL_SECONDS - MIN_POLL_GAP):
+                    await self._wake.wait()
+            except TimeoutError:
+                pass
 
     async def async_unload(self) -> None:
-        """Tear down the BLE connection."""
+        """Stop polling and tear down the BLE connection."""
         self._unloading = True
+        if self._unsub_advertisements is not None:
+            self._unsub_advertisements()
+            self._unsub_advertisements = None
+        if (task := self._poll_task) is not None:
+            self._poll_task = None
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Poll loop for %s ended with an error", self.address, exc_info=True)
+        # Wait out a connection attempt still in flight, so it can't finish
+        # after this and keep the light (which takes one connection at a
+        # time) away from the entry being set up in this one's place.
+        try:
+            async with asyncio.timeout(UPDATE_TIMEOUT):
+                async with self._connect_lock:
+                    pass
+        except TimeoutError:
+            _LOGGER.debug("Fluval light %s: connect still in progress at unload", self.address)
+        await self._async_drop_connection("unloading")
+
+    async def _async_drop_connection(self, reason: str) -> None:
+        """Forget the current connection and disconnect it, if there is one."""
         client = self._client
         self._client = None
-        if client is not None and client.is_connected:
-            await client.disconnect()
+        self._fail_read_waiters(BleakError(reason))
+        if client is None:
+            return
+        _LOGGER.debug("Fluval light %s: dropping connection (%s)", self.address, reason)
+        await self._async_disconnect(client)
+
+    async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
+        try:
+            async with asyncio.timeout(DISCONNECT_TIMEOUT):
+                await client.disconnect()
+        except Exception:  # noqa: BLE001 - it's going away regardless
+            _LOGGER.debug("Fluval light %s: disconnect failed", self.address, exc_info=True)
 
     async def _async_update_data(self) -> FluvalState:
-        await self._async_ensure_connected()
+        try:
+            async with asyncio.timeout(UPDATE_TIMEOUT):
+                state = await self._async_poll()
+        except TimeoutError as err:
+            # Something hung (the read itself times out much sooner); start
+            # over with a fresh connection next time.
+            await self._async_drop_connection("poll timed out")
+            raise UpdateFailed(f"Timed out polling Fluval light {self.address}") from err
+        except UpdateFailed:
+            self._failed_polls += 1
+            if self._failed_polls >= FAILED_POLLS_BEFORE_RECONNECT and self._client is not None:
+                await self._async_drop_connection(
+                    f"no answer in {self._failed_polls} polls in a row"
+                )
+            raise
+        self._failed_polls = 0
+        return state
+
+    async def _async_poll(self) -> FluvalState:
+        try:
+            await self._async_ensure_connected()
+        except (BleakError, TimeoutError, EOFError) as err:
+            # Expected while the light or the Bluetooth proxy is offline:
+            # logged once, then retried every poll (and on its next advert).
+            raise UpdateFailed(
+                f"Could not connect to Fluval light {self.address}: "
+                f"{type(err).__name__}: {err}"
+            ) from err
         if self._time_sync_due():
             try:
                 await self._async_write_time()
             except BleakError:
                 _LOGGER.debug("Fluval light %s: syncing time failed", self.address, exc_info=True)
-        try:
-            frame = await self._async_send_and_wait(frame_read())
-        except (BleakError, TimeoutError, EOFError) as err:
-            raise UpdateFailed(
-                f"Could not read Fluval light {self.address} state: "
-                f"{type(err).__name__}: {err}"
-            ) from err
+        frame: bytes | None = None
+        for attempt in range(READ_ATTEMPTS):
+            try:
+                frame = await self._async_send_and_wait(frame_read())
+                break
+            except TimeoutError as err:
+                if attempt + 1 < READ_ATTEMPTS:
+                    _LOGGER.debug("Fluval light %s: no answer to read, resending", self.address)
+                    continue
+                raise UpdateFailed(
+                    f"Could not read Fluval light {self.address} state: "
+                    f"{type(err).__name__}: {err}"
+                ) from err
+            except (BleakError, EOFError) as err:
+                raise UpdateFailed(
+                    f"Could not read Fluval light {self.address} state: "
+                    f"{type(err).__name__}: {err}"
+                ) from err
+        assert frame is not None
 
         _LOGGER.debug("Fluval light %s read response: %s", self.address, frame.hex())
         self.last_read_frame = frame
@@ -193,17 +335,30 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         _LOGGER.debug("Fluval light %s disconnected", self.address)
         if self._client is client:
             self._client = None
+            self._fail_read_waiters(BleakError("disconnected"))
+            if not self._unloading:
+                # Reconnect straight away if the light is still in reach.
+                self._wake.set()
+
+    def _fail_read_waiters(self, err: Exception) -> None:
         for waiter in self._read_waiters:
             if not waiter.done():
-                waiter.set_exception(BleakError("disconnected"))
+                waiter.set_exception(err)
         self._read_waiters.clear()
 
     async def _async_ensure_connected(self) -> None:
-        if self._client is not None and self._client.is_connected:
+        if self.is_connected:
             return
         async with self._connect_lock:
-            if self._client is not None and self._client.is_connected:
+            if self.is_connected:
                 return
+            if self._unloading:
+                raise BleakError(f"Fluval light {self.address} is being unloaded")
+            # A client that stopped being connected without the disconnect
+            # callback firing is cleaned up before connecting again.
+            if (stale := self._client) is not None:
+                self._client = None
+                await self._async_disconnect(stale)
             ble_device = bluetooth.async_ble_device_from_address(
                 self.hass, self.address, connectable=True
             )
@@ -221,31 +376,55 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
                 ),
                 timeout=CONNECT_TIMEOUT,
             )
-            await client.start_notify(CHAR_NOTIFY_UUID, self._notification_handler)
-
-            write_char = client.services.get_characteristic(CHAR_WRITE_UUID)
-            self._write_with_response = not (
-                write_char is not None and "write-without-response" in write_char.properties
-            )
-            self._write_char = write_char
-            self._client = client
-
-            # The official app waits 300ms after service discovery before
-            # enabling notifications, then a further 400ms before treating
-            # the connection as ready to receive its first command. Cheap
-            # BLE modules like this one's firmware can silently drop writes
-            # sent before its own post-connection init settles, so mirror
-            # that same ~700ms grace period here.
-            _LOGGER.debug("Fluval light %s connected, waiting for module to settle", self.address)
-            await asyncio.sleep(CONNECT_SETTLE_DELAY)
-
-            self._time_synced_at = None
             try:
-                await self._async_write_time()
-            except BleakError:
-                _LOGGER.debug(
-                    "Fluval light %s: syncing time on connect failed", self.address, exc_info=True
-                )
+                async with asyncio.timeout(CONNECT_SETUP_TIMEOUT):
+                    await self._async_setup_client(client)
+            except BaseException:
+                # Never leave a half-set-up connection open: the light takes
+                # one connection at a time (and lights like it stop
+                # advertising while connected), so a leaked client could
+                # lock this integration out until a reload.
+                if self._client is client:
+                    self._client = None
+                await self._async_disconnect(client)
+                raise
+            if self._unloading:
+                self._client = None
+                await self._async_disconnect(client)
+                raise BleakError(f"Fluval light {self.address} is being unloaded")
+
+    async def _async_setup_client(self, client: BleakClientWithServiceCache) -> None:
+        # A frame half-received on the previous connection must not prefix
+        # this one's first answer.
+        self._reassembler = FrameReassembler()
+        self._failed_polls = 0
+        await client.start_notify(CHAR_NOTIFY_UUID, self._notification_handler)
+
+        write_char = client.services.get_characteristic(CHAR_WRITE_UUID)
+        self._write_with_response = not (
+            write_char is not None and "write-without-response" in write_char.properties
+        )
+        self._write_char = write_char
+        self._client = client
+
+        # The official app waits 300ms after service discovery before
+        # enabling notifications, then a further 400ms before treating
+        # the connection as ready to receive its first command. Cheap
+        # BLE modules like this one's firmware can silently drop writes
+        # sent before its own post-connection init settles, so mirror
+        # that same ~700ms grace period here.
+        _LOGGER.debug("Fluval light %s connected, waiting for module to settle", self.address)
+        await asyncio.sleep(CONNECT_SETTLE_DELAY)
+
+        # A light that lost power (as in a power cut) restarts with its
+        # clock wrong, so the time is always sent on connect.
+        self._time_synced_at = None
+        try:
+            await self._async_write_time()
+        except BleakError:
+            _LOGGER.debug(
+                "Fluval light %s: syncing time on connect failed", self.address, exc_info=True
+            )
 
     async def async_sync_time(self) -> None:
         """Push the current local time to the light's on-board clock."""
@@ -302,12 +481,16 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             " ".join(wire.hex() for wire in wires),
             self._write_with_response,
         )
-        for index, wire in enumerate(wires):
-            if index:
-                await asyncio.sleep(CHUNK_DELAY)
-            await client.write_gatt_char(
-                CHAR_WRITE_UUID, wire, response=self._write_with_response
-            )
+        try:
+            async with asyncio.timeout(WRITE_TIMEOUT):
+                for index, wire in enumerate(wires):
+                    if index:
+                        await asyncio.sleep(CHUNK_DELAY)
+                    await client.write_gatt_char(
+                        CHAR_WRITE_UUID, wire, response=self._write_with_response
+                    )
+        except TimeoutError as err:
+            raise BleakError(f"writing to Fluval light {self.address} timed out") from err
 
     async def _async_send_and_wait(self, frame: bytes, timeout: float = READ_RESPONSE_TIMEOUT) -> bytes:
         loop = asyncio.get_running_loop()
