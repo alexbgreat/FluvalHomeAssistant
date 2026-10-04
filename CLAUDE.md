@@ -49,7 +49,11 @@
   advertising while it has one), a link with no answers for
   `FAILED_POLLS_BEFORE_RECONNECT` polls is dropped, and an advertisement from
   the light wakes the poll loop to reconnect. "Not visible" is an
-  `UpdateFailed` (logged once), not a traceback every poll.
+  `UpdateFailed` (logged once), not a traceback every poll. The owner saw
+  the light connected in HA's Bluetooth view while every entity was
+  unavailable, i.e. a link up but no answers (hung setup or no
+  notifications); since 0.6.2 such a link is dropped with its GATT service
+  cache cleared, so the next connection rediscovers services.
 - Support both older (2024.x) and current Home Assistant cores; there's no
   test suite in the repo yet, so validate against real HA cores
   (`pytest-homeassistant-custom-component`) in a scratch venv.

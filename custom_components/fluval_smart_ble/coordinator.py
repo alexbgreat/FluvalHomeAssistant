@@ -236,7 +236,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             _LOGGER.debug("Fluval light %s: connect still in progress at unload", self.address)
         await self._async_drop_connection("unloading")
 
-    async def _async_drop_connection(self, reason: str) -> None:
+    async def _async_drop_connection(self, reason: str, clear_cache: bool = False) -> None:
         """Forget the current connection and disconnect it, if there is one."""
         client = self._client
         self._client = None
@@ -244,7 +244,23 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
         if client is None:
             return
         _LOGGER.debug("Fluval light %s: dropping connection (%s)", self.address, reason)
+        if clear_cache:
+            await self._async_clear_cache(client)
         await self._async_disconnect(client)
+
+    async def _async_clear_cache(self, client: BleakClientWithServiceCache) -> None:
+        """Forget the cached GATT services, so the next connection rediscovers them.
+
+        Connections reuse the services cached by Home Assistant and the
+        ESPHome proxy. If those no longer match the light (after the proxy
+        or light restarted), the link can come up and accept writes while
+        notifications - and so every answer - never arrive.
+        """
+        try:
+            async with asyncio.timeout(DISCONNECT_TIMEOUT):
+                await client.clear_cache()
+        except Exception:  # noqa: BLE001 - best effort
+            _LOGGER.debug("Fluval light %s: clearing service cache failed", self.address, exc_info=True)
 
     async def _async_disconnect(self, client: BleakClientWithServiceCache) -> None:
         try:
@@ -266,7 +282,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
             self._failed_polls += 1
             if self._failed_polls >= FAILED_POLLS_BEFORE_RECONNECT and self._client is not None:
                 await self._async_drop_connection(
-                    f"no answer in {self._failed_polls} polls in a row"
+                    f"no answer in {self._failed_polls} polls in a row", clear_cache=True
                 )
             raise
         self._failed_polls = 0
@@ -386,6 +402,7 @@ class FluvalCoordinator(DataUpdateCoordinator[FluvalState]):
                 # lock this integration out until a reload.
                 if self._client is client:
                     self._client = None
+                await self._async_clear_cache(client)
                 await self._async_disconnect(client)
                 raise
             if self._unloading:
